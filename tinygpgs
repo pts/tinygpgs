@@ -34,12 +34,14 @@ def yield_gpg_binary_packets(fread, c0=''):
       b = ord(c)
       if 224 + 9 <= b < 255:
         while 1:
-          size = 1 << (b & 31)
-          data = fread(size)
-          if len(data) < size:
-            raise ValueError('EOF in partial packet.')
-          is_partial = True
-          yield packet_type, is_partial, data
+          remaining, is_partial = 1 << (b & 31), True
+          while remaining > 0:
+            size = min(remaining, 8192)  # Avoid large partial packets.
+            data = fread(size)
+            if len(data) != size:
+              raise ValueError('EOF in partial packet.')
+            yield packet_type, is_partial, data
+            remaining -= size
           c = fread(1)
           if not c:
             raise ValueError('EOF in after-partial size byte 0.')
@@ -86,9 +88,26 @@ def yield_gpg_binary_packets(fread, c0=''):
       else:
         raise ValueError('Unknown old packet tag: %d' % lt)
     if size:
+      if packet_type in (9, 11, 18):
+        if size > 8192:
+          remaining, is_partial = (size - 8192) & ~8191, True
+          while remaining > 0:
+            size2 = min(remaining, 8192)
+            data = fread(size2)
+            if len(data) != size2:
+              raise ValueError('EOF in partial packet.')
+            yield packet_type, is_partial, data
+            remaining -= size2
+            size -= size2
+        assert 0 < size <= 8192
+      elif size > 46:
+        # We could easily handle megabytes, but the output of `gpg
+        # --symmetric' just doesn't have such packets.
+        raise ValueError('Packet size unusually large: type %d, size %d' %
+                         (packet_type, size))
       data = fread(size)
       if len(data) < size:
-        raise ValueError('EOF in packet.')
+        raise ValueError('EOF in packet, type %d' % packet_type)
       is_partial = False
       yield packet_type, is_partial, data
 
