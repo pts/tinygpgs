@@ -10,17 +10,18 @@
 
 import struct
 import sys
-import zlib
 
 import tinyveracrypt
 
 
-def yield_packets(fread):
+# TODO(pts): Get rid of this, inline both callers.
+def yield_gpg_binary_packets(fread, c0=''):
   while 1:
-    c = fread(1)
-    if not c:
+    if not c0:
+      c0 = fread(1)
+    if not c0:
       break
-    b = ord(c)
+    b, c0 = ord(c0), ''
     if not b & 128:
       raise ValueError('Tag bit 7 expected.')
     if b & 64:  # New-format packet.
@@ -92,6 +93,102 @@ def yield_packets(fread):
       yield packet_type, is_partial, data
 
 
+def crc24(data):
+  if not isinstance(data, (str, buffer)):
+    raise TypeError
+  crc = 0xb704ce
+  for c in data:  # TODO(pts): Faster, with CRC24_TABLE.
+    crc ^= ord(c) << 16
+    for _ in xrange(8):
+      crc <<= 1
+      if crc & 0x1000000:
+        crc ^= 0x1864cfb
+  return crc & 0xffffff
+
+
+def str_to_fread(data):
+  if not isinstance(data, (str, buffer)):
+    raise TypeError
+  i_ary = [0]
+
+  def fread(size):
+    i = i_ary[0]
+    result = data[i : i + size]
+    i_ary[0] = i + len(result)
+    return result
+
+  return fread
+
+
+def yield_gpg_packets(fread):
+  while 1:
+    c = fread(1)
+    if not c:
+      raise ValueError('EOF before GPG data.')
+    if not c.isspace():
+      break
+  if c == '-':
+    data = fread(27)
+    if not (len(data) == 27 and data.startswith('-----BEGIN PGP MESSAGE-----'[1:]) and data[26] in '\r\n'):
+      raise ValueError('GPG ASCII armor expected.')
+    import binascii  # For base64.
+    items = ['']
+    while 1:
+      data = fread(512)
+      if not data:
+        raise ValueError('EOF in GPG ASCII armor.')
+      if items[-1][-1:] == '\n' and data.startswith('-'):
+        if len(data) < 26:
+          data += fread(26 - len(data))
+        break
+      i = data.find('\n-')
+      if i >= 0:
+        items.append(data[:i])
+        data = data[i + 1:]
+        if len(data) < 26:
+          data += fread(26 - len(data))
+        break
+      items.append(data)
+    if not (data.startswith('-----END PGP MESSAGE-----') and data[25 : 26] in '\r\n'):
+      raise ValueError('Bad end of GPG ASCII armor.')
+    # TODO(pts): Use less memory by streaming the binary data.
+    data = ''.join(items).replace('\r\n', '\n').replace('\r', '\n').rstrip('\n')
+    del items
+    k = data.rfind('=')
+    if k <= 0:
+      raise ValueError('Missing GPG ASCII armor checksum.')
+    if len(data) != k + 5:
+      raise ValueError('GPG ASCII armor checksum must be 4 bytes.')
+    try:
+      checksum = binascii.a2b_base64(data[k + 1:])
+    except binascii.Error:
+      raise ValueError('Bad GPG ASCII armor checksum base64.')
+    checksum, = struct.unpack('>L', '\0' + checksum)
+    i = 0
+    while i < k:
+      j = data.find('\n', i)
+      if i == j:
+        break
+      i = j + 1  # Ignore armor header line.
+    i
+    try:
+      data = binascii.a2b_base64(data[i + 1 : k])
+    except binascii.Error:
+      raise ValueError('Bad GPG ASCII armor data base64.')
+    if crc24(data) != checksum:
+      raise ValueError('GPG ASCII armor checksum mismatch.')
+    fread = str_to_fread(data)
+    c = fread(1)
+    if not c:
+      raise ValueError('Empty GPG ASCII armor data.')
+  if c not in '\x8c\x8d\x8e\xc3':  # packet_type == 3 (SKESK).
+    raise ValueError('GPG symmetric (SKESK) packet expected.')
+  # TODO(pts): Also check 4 <= packet_size <= 46 as part of the file format
+  # check above.
+  for packet in yield_gpg_binary_packets(fread, c):
+    yield packet
+
+
 CIPHER_ALGOS = {
 #    0: 'unencrypted',  # !! GPG can't produce this.
     7: 'aes-128',
@@ -153,7 +250,7 @@ def open_symmetric_gpg(f, passphrase):
   # TODO(pts): Support the ASCII armor as well.
   is_prev_partial = False
   cipher_algo = session_key = None
-  iter_packets = yield_packets(f)
+  iter_packets = yield_gpg_packets(f)
   for packet_type, is_partial, data in iter_packets:
     break
   else:
@@ -350,8 +447,10 @@ def decrypt_symmetric_gpg(fread, of, passphrase):
       if b == 0:
         zd = None  # Uncompressed.
       elif b == 1:
+        import zlib
         zd = zlib.decompressobj(-13)
       elif b == 2:
+        import zlib
         zd = zlib.decompressobj(15)
       elif b == 3:
         raise ValueError('bzip2 compression not supported.')
@@ -390,7 +489,7 @@ def decrypt_symmetric_gpg(fread, of, passphrase):
 
   fread2 = iter_to_fread(yield_data_chunks(data1, data))
   done_state, mdc = 0, None
-  for packet_type, is_partial, data in yield_packets(fread2):
+  for packet_type, is_partial, data in yield_gpg_binary_packets(fread2):
     if done_state in (0, 2) and packet_type == 19 and has_mdc:  # MDC.
       if len(data) != 20:
         raise ValueError('MDC size must be 20, got: %d' % len(data))
