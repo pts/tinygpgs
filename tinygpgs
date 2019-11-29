@@ -1,0 +1,439 @@
+#! /usr/bin/python
+# by pts@fazekas.hu at Thu Nov 28 22:09:47 CET 2019
+#
+# Simple Python 2.x tool to decrypt OpenPGP data encrypted with symmetric
+# key (output of `gpg -c' and `gpg --symmetric'), crypto based on
+# tinyveracrypt, only AES cipher is supported.
+#
+# OpenPGP is defined in https://tools.ietf.org/html/rfc4880
+#
+
+import struct
+import sys
+import zlib
+
+import tinyveracrypt
+
+
+def yield_packets(fread):
+  while 1:
+    c = fread(1)
+    if not c:
+      break
+    b = ord(c)
+    if not b & 128:
+      raise ValueError('Tag bit 7 expected.')
+    if b & 64:  # New-format packet.
+      packet_type = b & 63
+      if packet_type == 0:
+        raise ValueError('Packet type must not be 0.')
+      c = fread(1)
+      if not c:
+        raise ValueError('EOF in new packet size byte 0.')
+      b = ord(c)
+      if 224 + 9 <= b < 255:
+        while 1:
+          size = 1 << (b & 31)
+          data = fread(size)
+          if len(data) < size:
+            raise ValueError('EOF in partial packet.')
+          is_partial = True
+          yield packet_type, is_partial, data
+          c = fread(1)
+          if not c:
+            raise ValueError('EOF in after-partial size byte 0.')
+          b = ord(c)
+          if not 224 <= b < 255:
+            break
+      if b < 191:
+        size = b
+      elif b < 224:
+        c = fread(1)
+        if not c:
+          raise ValueError('EOF in new packet size byte 1.')
+        size = ((b - 192) << 8 | ord(c)) + 192
+      elif b < 255:
+        # >= 512 bytes needed.
+        raise ValueError('First partial body too short.')
+      else:
+        c = fread(4)
+        if len(c) < 4:
+          raise ValueError('EOF in new packet size byte 5.')
+        size, = struct.unpack('>L', c)
+    else:  # Old-format packet.
+      packet_type = (b & 63) >> 2
+      if packet_type == 0:
+        raise ValueError('Packet type must not be 0.')
+      lt = b & 3
+      if lt == 0:
+        c = fread(1)
+        if not c:
+          raise ValueError('EOF in old packet size 0.')
+        size = ord(c)
+      elif lt == 1:
+        c = fread(2)
+        if len(c) < 2:
+          raise ValueError('EOF in old packet size 1.')
+        size, = struct.unpack('>H', c)
+      elif lt == 2:
+        c = fread(4)
+        if len(c) < 4:
+          raise ValueError('EOF in old packet size 2.')
+        size, = struct.unpack('>L', c)
+      elif lt == 3:
+        raise ValueError('Indeterminate packet size not supported.')
+      else:
+        raise ValueError('Unknown old packet tag: %d' % lt)
+    if size:
+      data = fread(size)
+      if len(data) < size:
+        raise ValueError('EOF in packet.')
+      is_partial = False
+      yield packet_type, is_partial, data
+
+
+CIPHER_ALGOS = {
+#    0: 'unencrypted',  # !! GPG can't produce this.
+    7: 'aes-128',
+    8: 'aes-192',
+    9: 'aes-256',
+}
+
+KEYTABLE_SIZES = {
+    7: 16,
+    8: 24,
+    9: 32,
+}
+
+HASH_ALGOS = {
+    1: 'md5',
+    2: 'sha1',
+    3: 'ripemd160',
+    8: 'sha256',
+    9: 'sha384',
+    10: 'sha512',
+    11: 'sha224',
+}
+
+S2K_TYPES = {
+    0: 'simple',
+    1: 'salted',
+    3: 'iterated-salted',
+}
+
+
+def iter_to_fread(iter_str):
+  data_ary, iter_str = [buffer('')], iter(iter_str)
+
+  def fread(size):
+    if size <= 0:
+      return ''
+    data = data_ary[0]
+    result, data = data[:size], buffer(data, size)
+    if len(result) < size:
+      remaining = size - len(result)
+      result = [result]
+      while remaining > 0:
+        try:
+          data = buffer(iter_str.next())
+        except StopIteration:
+          break
+        result.append(data[:remaining])
+        data = buffer(data, len(result[-1]))
+        remaining -= len(result[-1])
+      result = ''.join(result)
+    data_ary[0] = data
+    return result
+
+  return fread
+
+
+def open_symmetric_gpg(f, passphrase):
+  # https://tools.ietf.org/html/rfc4880
+  # TODO(pts): Support the ASCII armor as well.
+  is_prev_partial = False
+  cipher_algo = session_key = None
+  iter_packets = yield_packets(f)
+  for packet_type, is_partial, data in iter_packets:
+    break
+  else:
+    raise ValueError('EOF before SKESK packet.')
+  # Symmetric-Key Encrypted Session Key Packet
+  if packet_type != 3:
+    raise ValueError('Expected SKESK packet type, got: %d' % packet_type)
+  if len(data) < 4:
+    raise ValueError('SKESK packet too short.')
+  if len(data) > 78:
+    raise ValueError('SKESK packet too long.')
+  assert not is_partial
+  version, cipher_algo, s2k_type, hash_algo = struct.unpack(
+      '>BBBB', buffer(data, 0, 4))
+  if version != 4:
+    raise ValueError('SKESK version 4 expected, got %d' % version)
+  if cipher_algo not in CIPHER_ALGOS:
+    raise ValueError('Unknown SKESK cipher_algo: %d' % cipher_algo)
+  if s2k_type not in S2K_TYPES:
+    raise ValueError('Unknown SKESK s2k_type: %d' % s2k_type)
+  if hash_algo not in HASH_ALGOS:
+    raise ValueError('Unknown SKESK hash_algo: %d' % hash_algo)
+  i = 4
+  if s2k_type == 0:
+    salt, count = '', 0
+  else:
+    salt = data[i : i + 8]
+    if len(salt) < 8:
+      raise ValueError('EOF in SKESK salt.')
+    i += 8
+    if s2k_type == 3:
+      if i >= len(data):
+        raise ValueError('EOF in SKESK iterated-salted count.')
+      b = ord(data[i])
+      i += 1
+      count = (16 + (b & 15)) << ((b >> 4) + 6)
+    else:
+      count = 0
+  #print 'SKESK cipher_algo=%s s2k_type=%s hash_algo=%s count=%d salt=%r encrypted_session_key=%r' % (
+  #    CIPHER_ALGOS[cipher_algo], S2K_TYPES[s2k_type], HASH_ALGOS[hash_algo], count, salt, data[i:])
+  digest_func, _ = tinyveracrypt.HASH_DIGEST_PARAMS[HASH_ALGOS[hash_algo]]
+  keytable_size = KEYTABLE_SIZES[cipher_algo]
+  for packet_type, is_partial, data2 in iter_packets:
+    break
+  else:
+    raise ValueError('EOF after SKESK packet.')
+  if packet_type == 9:
+    has_mdc = False
+    data_ary = [(is_partial, data2)]
+  elif packet_type == 18:
+    has_mdc = True
+    if not data2:
+      raise ValueError('Integrity-protected packet too short.')
+    version = ord(data2[0])
+    if version != 1:
+      raise ValueError('Integrity-protected packet version 1 expected, got: %d' % version)
+    data_ary = [(is_partial, data2[1:])]
+  else:
+    raise ValueError('Expected symmetric data packet type, got: %d' % packet_type)
+  del data2
+
+  # Calculate session key.
+  # https://github.com/mitchellrj/python-pgp/blob/master/pgp/s2k.py
+  session_key = []
+  session_key_remaining = keytable_size
+  sp = salt + passphrase
+  del passphrase
+  if count <= len(sp):
+    count = len(sp)
+  while session_key_remaining > 0:
+    d, c = digest_func('\0' * len(session_key)), count
+    while c > len(sp):
+      d.update(sp)
+      c -= len(sp)
+    d.update(sp[:c])
+    session_key.append(d.digest())
+    session_key_remaining -= len(session_key[-1])
+  session_key = ''.join(session_key)[:keytable_size]
+  assert len(session_key) == keytable_size
+  del keytable_size, salt, sp
+  # Correct, same as:
+  # gpg --list-packets -vvvvv --show-session-key --pinentry-mode loopback hellow4.bin.gpg
+  #print 'SKESK session_key=%r' % (session_key.encode('hex').upper(),)
+
+  if len(data) > i:  # Encrypted session key.
+    if s2k_type == 0:
+      raise ValueError('Encrypted session key needs salt.')
+    strxor_16 = tinyveracrypt.make_strxor(16)  # For AES block size.
+    codebook = tinyveracrypt.new_aes(session_key)
+    encrypt_func = codebook.encrypt
+    fre = encrypt_func('\0' * 16)
+    session_key = []
+    for i in xrange(i, len(data), 16):
+      datae = data[i : i + 16]
+      data1 = strxor_16(datae + '\0' * (16 - len(datae)), fre)[:len(datae)]
+      if session_key:
+        session_key.append(data1)
+      else:
+        cipher_algo = ord(data1[0])
+        if cipher_algo not in CIPHER_ALGOS:
+          raise ValueError('Unknown encrypted session key cipher_algo: %d' % cipher_algo)
+        session_key.append(data1[1:])
+      if len(datae) < 16:
+        break
+      fre = encrypt_func(datae)
+    session_key = ''.join(session_key)
+    if len(session_key) != KEYTABLE_SIZES[cipher_algo]:
+      raise ValueError('Encrypted session key size must be %d for cipher_algo %s, got: %d' %
+                       (KEYTABLE_SIZES[cipher_algo], CIPHER_ALGOS[cipher_algo], len(session_key)))
+
+  def yield_strs():
+    if data_ary:
+      is_partial, data = data_ary.pop()
+      yield data
+      is_done = not is_partial
+    for packet_type2, is_partial, data in iter_packets:
+      if is_done:
+        raise ValueError('Unexpected packet after symmetric data: %d' %
+                         packet_type2)
+      yield data
+      is_done = not is_partial
+    if not is_done:
+      raise ValueError('Last packet must be a non-partial packet.')
+
+  return cipher_algo, session_key, has_mdc, iter_to_fread(yield_strs())
+
+
+class BadPassphraseError(ValueError):
+  """Raised when a bad passphrase is detected early at decryption."""
+
+
+def decrypt_symmetric_gpg(fread, of, passphrase):
+  cipher_algo, session_key, has_mdc, fread = open_symmetric_gpg(
+      fread, passphrase)
+  del passphrase
+  #print (cipher_algo, session_key, has_mdc)
+  strxor_16 = tinyveracrypt.make_strxor(16)  # For AES block size.
+  strxor_2 = tinyveracrypt.make_strxor(2)
+  codebook = tinyveracrypt.new_aes(session_key)
+  encrypt_func = codebook.encrypt
+  fre = encrypt_func('\0' * 16)
+  data = fread(16)
+  if len(data) != 16:
+    raise ValueError('EOF in block 0.')
+  data1 = strxor_16(data, fre)
+  fre = encrypt_func(data)
+  queue = []
+  if has_mdc:
+    mdc_obj = tinyveracrypt.HASH_DIGEST_PARAMS['sha1'][0](data1)
+    exp2 = data1[-2:]
+    data = fread(16)
+    if len(data) != 16:  # Always true, encrypted data includes 22 bytes of MDC packet.
+      raise ValueError('EOF in block 1.')
+    data1 = strxor_16(data, fre)
+    if data1[:2] != exp2:  # We don't detect bad passphrase with P = 1./2**16.
+      raise BadPassphraseError('Bad passphrase (MDC repeat).')
+    queue.append(data1)
+    data1 = data1[2:]
+  else:
+    exp2 = strxor_2(fre[:2], data1[-2:])
+    got2 = fread(2)
+    if len(got2) != 2:
+      raise ValueError('EOF in block got2.')
+    if exp2 != got2:  # We don't detect bad passphrase with P = 1./2**16.
+      raise BadPassphraseError('Bad passphrase (non-MDC repeat).')
+    fre = encrypt_func(data[2:] + got2)
+    data = fread(16)
+    # On empty plaintext, len(data) == 8 here.
+    if len(data) < 2:
+      raise ValueError('EOF in block 1.')
+    data1 = strxor_16(data + '\0' * (16 - len(data)), fre)[:len(data)]
+    mdc_obj = None
+  # By doing these checks we decrease the P above by better than /2**5.
+  if data1[0] == '\xa3' and ord(data1[1]) < 0x20:
+    pass  # Compressed packet.
+  elif has_mdc and data1.startswith('\xd3\x14'):
+    pass  # MDC without any literal packet.
+  elif data1[0] in '\xac\xad\xae\xcb':
+    pass  # Literal packet, non-indeterminate.
+  else:
+    raise BadPassphraseError('Bad passphrase (bad packet type).')
+
+  def yield_data_chunks(data1, data):
+    b = ord(data1[0])  # 0xa3 for compressed.
+    if not b & 128:
+      raise ValueError('Tag bit 7 expected -- bad passphrase?')
+    if b & 64:
+      packet_type1, is_indeterminate = b & 63, False
+    else:
+      packet_type1, is_indeterminate = (b & 63) >> 2, (b & 3) == 3
+    zd = None
+    if packet_type1 == 8 and is_indeterminate:  # Compressed packet.
+      b = ord(data1[1])
+      if b == 0:
+        zd = None  # Uncompressed.
+      elif b == 1:
+        zd = zlib.decompressobj(-13)
+      elif b == 2:
+        zd = zlib.decompressobj(15)
+      elif b == 3:
+        raise ValueError('bzip2 compression not supported.')
+      else:
+        raise ValueError('Unknown compression: %d' % b)
+      if zd:
+        data1 = zd.decompress(data1[2:])  # Can raise zlib.error.
+      else:
+        data1 = data1[2:]
+    yield data1
+    if len(data) == 16:
+      while 1:
+        fre = encrypt_func(data)
+        data = fread(16)
+        if len(data) < 16:
+          data1 = strxor_16(data + '\0' * (16 - len(data)), fre)[:len(data)]
+          if mdc_obj:
+            queue.append(data1)
+          if zd:
+            data1 = zd.decompress(data1)
+          yield data1
+          break
+        data1 = strxor_16(data, fre)
+        if mdc_obj:
+          queue.append(data1)
+          if len(queue) > 2:  # 2 * 16 - 2 >= 22.
+            mdc_obj.update(queue.pop(0))
+        if zd:  # TODO(pts): Do larger buffering. Does it speed it up?
+          data1 = zd.decompress(data1)
+        yield data1
+    if zd:
+      data1 = zd.flush()
+      yield data1
+      # Ignore zd.unused_data (22 bytes of mdc).
+      # !! Don't even zd.decompress these last 22 bytes.
+
+  fread2 = iter_to_fread(yield_data_chunks(data1, data))
+  done_state, mdc = 0, None
+  for packet_type, is_partial, data in yield_packets(fread2):
+    if done_state in (0, 2) and packet_type == 19 and has_mdc:  # MDC.
+      if len(data) != 20:
+        raise ValueError('MDC size must be 20, got: %d' % len(data))
+      mdc = data
+      done_state = 3
+      continue
+    if done_state in (2, 3):
+      raise ValueError('Unexpected packet after literal data: %d' %
+                       packet_type)
+    if packet_type != 11:
+      raise ValueError('Literal packet expected.')
+    if done_state == 0:
+      if len(data) < 6:
+        raise ValueError('First literal packet too short.')
+      literal_type, filename_size = struct.unpack('>cB', data[:2])
+      if literal_type not in 'btul1':
+        raise ValueError('Bad literal type: %r' % literal_type)
+      if len(data) < 6 + filename_size:
+        raise ValueError('First literal packet too short for filename.')
+      # First we get filename, then the date (4 bytes), 4 byte Unix timestamp.
+      data = data[6 + filename_size:]
+    of.write(data)
+    done_state = 1 + (not is_partial)
+  if done_state not in (2, 3):
+    raise ValueError('Missing last literal packet.')
+  if has_mdc:
+    queue = ''.join(queue)
+    if len(queue) < 22 or queue[-22 : -20] != '\xd3\x14':
+      raise ValueError('Missing MDC packet.')
+    mdc = queue[-20:]
+    mdc_obj.update(queue[:-20])
+    if mdc_obj.digest() != mdc:
+      raise ValueError('MDC mismatch, message may be tampered with.')
+
+
+def main(argv):
+  of = sys.stdout
+  if len(argv) > 1:
+    passphrase = argv[1]
+  else:
+    passphrase = tinyveracrypt.prompt_passphrase(False)
+  decrypt_symmetric_gpg(sys.stdin.read, sys.stdout, passphrase)
+
+
+if __name__ == '__main__':
+  sys.exit(main(sys.argv))
