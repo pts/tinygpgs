@@ -175,6 +175,56 @@ def str_to_fread(data):
   return fread
 
 
+def get_gpg_ascii_armor_fread(fread):
+  import binascii  # For base64.
+  items = ['']
+  while 1:
+    data = fread(512)
+    if not data:
+      raise ValueError('EOF in GPG ASCII armor.')
+    if items[-1][-1:] == '\n' and data.startswith('-'):
+      if len(data) < 26:
+        data += fread(26 - len(data))
+      break
+    i = data.find('\n-')
+    if i >= 0:
+      items.append(data[:i])
+      data = data[i + 1:]
+      if len(data) < 26:
+        data += fread(26 - len(data))
+      break
+    items.append(data)
+  if not (data.startswith('-----END PGP MESSAGE-----') and data[25 : 26] in '\r\n'):
+    raise ValueError('Bad end of GPG ASCII armor.')
+  # !! TODO(pts): Use less memory by streaming the binary data.
+  data = ''.join(items).replace('\r\n', '\n').replace('\r', '\n').rstrip('\n')
+  del items
+  k = data.rfind('=')
+  if k <= 0:
+    raise ValueError('Missing GPG ASCII armor checksum.')
+  if len(data) != k + 5:
+    raise ValueError('GPG ASCII armor checksum must be 4 bytes.')
+  try:
+    checksum = binascii.a2b_base64(data[k + 1:])
+  except binascii.Error:
+    raise ValueError('Bad GPG ASCII armor checksum base64.')
+  checksum, = struct.unpack('>L', '\0' + checksum)
+  i = 0
+  while i < k:
+    j = data.find('\n', i)
+    if i == j:
+      break
+    i = j + 1  # Ignore armor header line.
+  i
+  try:
+    data = binascii.a2b_base64(data[i + 1 : k])
+  except binascii.Error:
+    raise ValueError('Bad GPG ASCII armor data base64.')
+  if crc24(data) != checksum:
+    raise ValueError('GPG ASCII armor checksum mismatch.')
+  return str_to_fread(data)
+
+
 def yield_gpg_packets(fread):
   while 1:
     c = fread(1)
@@ -186,60 +236,12 @@ def yield_gpg_packets(fread):
     data = fread(27)
     if not (len(data) == 27 and data.startswith('-----BEGIN PGP MESSAGE-----'[1:]) and data[26] in '\r\n'):
       raise ValueError('GPG ASCII armor expected.')
-    import binascii  # For base64.
-    items = ['']
-    while 1:
-      data = fread(512)
-      if not data:
-        raise ValueError('EOF in GPG ASCII armor.')
-      if items[-1][-1:] == '\n' and data.startswith('-'):
-        if len(data) < 26:
-          data += fread(26 - len(data))
-        break
-      i = data.find('\n-')
-      if i >= 0:
-        items.append(data[:i])
-        data = data[i + 1:]
-        if len(data) < 26:
-          data += fread(26 - len(data))
-        break
-      items.append(data)
-    if not (data.startswith('-----END PGP MESSAGE-----') and data[25 : 26] in '\r\n'):
-      raise ValueError('Bad end of GPG ASCII armor.')
-    # TODO(pts): Use less memory by streaming the binary data.
-    data = ''.join(items).replace('\r\n', '\n').replace('\r', '\n').rstrip('\n')
-    del items
-    k = data.rfind('=')
-    if k <= 0:
-      raise ValueError('Missing GPG ASCII armor checksum.')
-    if len(data) != k + 5:
-      raise ValueError('GPG ASCII armor checksum must be 4 bytes.')
-    try:
-      checksum = binascii.a2b_base64(data[k + 1:])
-    except binascii.Error:
-      raise ValueError('Bad GPG ASCII armor checksum base64.')
-    checksum, = struct.unpack('>L', '\0' + checksum)
-    i = 0
-    while i < k:
-      j = data.find('\n', i)
-      if i == j:
-        break
-      i = j + 1  # Ignore armor header line.
-    i
-    try:
-      data = binascii.a2b_base64(data[i + 1 : k])
-    except binascii.Error:
-      raise ValueError('Bad GPG ASCII armor data base64.')
-    if crc24(data) != checksum:
-      raise ValueError('GPG ASCII armor checksum mismatch.')
-    fread = str_to_fread(data)
+    fread = get_gpg_ascii_armor_fread(fread)
     c = fread(1)
     if not c:
       raise ValueError('Empty GPG ASCII armor data.')
   if c not in '\x8c\x8d\x8e\xc3':  # packet_type == 3 (SKESK).
-    raise ValueError('GPG symmetric (SKESK) packet expected.')
-  # TODO(pts): Also check 4 <= packet_size <= 46 as part of the file format
-  # check above.
+    raise ValueError('Bad GPG symmetric encrypted data (SKESK packet expected).')
   for packet in yield_gpg_binary_packets(fread, c):
     yield packet
 
@@ -313,10 +315,8 @@ def open_symmetric_gpg(f, passphrase):
   # Symmetric-Key Encrypted Session Key Packet
   if packet_type != 3:
     raise ValueError('Expected SKESK packet type, got: %d' % packet_type)
-  if len(data) < 4:
-    raise ValueError('SKESK packet too short.')
-  if len(data) > 78:
-    raise ValueError('SKESK packet too long.')
+  if not 4 <= len(data) <= 46:
+    raise ValueError('Bad GPG symmetric encrypted data (bad SKESK packet size).')
   assert not is_partial
   version, cipher_algo, s2k_type, hash_algo = struct.unpack(
       '>BBBB', buffer(data, 0, 4))
