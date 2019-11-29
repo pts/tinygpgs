@@ -495,13 +495,14 @@ def decrypt_symmetric_gpg(fread, of, passphrase):
   if compress_algo == 0:
     zd = None  # Uncompressed.
   elif compress_algo == 1:
-    import zlib
+    import zlib  # ImportError: no flate decompressor in Python.
     zd = zlib.decompressobj(-13)
   elif compress_algo == 2:
-    import zlib
-    zd = zlib.decompressobj(15)
+    import zlib  # ImportError: no flate decompressor in Python.
+    zd = zlib.decompressobj()
   elif compress_algo == 3:
-    raise ValueError('!! bzip2 compression not supported.')
+    import bz2  # ImportError: no bzip2 decompressor in Python.
+    zd = bz2.BZ2Decompressor()
   else:
     raise ValueError('Unknown compress_algo: %d' % compress_algo)
 
@@ -518,7 +519,10 @@ def decrypt_symmetric_gpg(fread, of, passphrase):
           if mdc_obj:
             queue.append(data1)
           if zd:
-            data1 = zd.decompress(data1)
+            try:
+              data1 = zd.decompress(data1)
+            except EOFError:  # By bz2.BZ2Decompressor.
+              data1 = ''
           yield data1
           break
         data1 = strxor_16(data, fre)
@@ -527,13 +531,17 @@ def decrypt_symmetric_gpg(fread, of, passphrase):
           if len(queue) > 2:  # 2 * 16 - 2 >= 22.
             mdc_obj.update(queue.pop(0))
         if zd:  # TODO(pts): Do larger buffering. Does it speed it up?
-          data1 = zd.decompress(data1)
+          try:
+            data1 = zd.decompress(data1)
+          except EOFError:  # By bz2.BZ2Decompressor.
+            data1 = ''
         yield data1
     if zd:
-      data1 = zd.flush()
+      if getattr(zd, 'flush', None):
+        data1 = zd.flush()
       yield data1
       # Ignore zd.unused_data (22 bytes of mdc).
-      # !! Don't even zd.decompress these last 22 bytes.
+      # !! Don't even zd.decompress these last 22 bytes, skip EOFError above.
 
   fread2 = iter_to_fread(yield_data_chunks(data1, data))
   done_state, mdc = 0, None
