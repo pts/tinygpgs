@@ -152,10 +152,10 @@ CRC24_TABLE = (
 )
 
 
-def crc24(data):
+def crc24(data, crc=0xb704ce):
   if not isinstance(data, (str, buffer)):
     raise TypeError
-  crc, table = 0xb704ce, CRC24_TABLE
+  table = CRC24_TABLE
   for c in data:
     crc = (table[((crc >> 16) ^ ord(c)) & 0xff] ^ (crc << 8)) & 0x00ffffff
   return crc
@@ -177,52 +177,73 @@ def str_to_fread(data):
 
 def get_gpg_ascii_armor_fread(fread):
   import binascii  # For base64.
-  items = ['']
-  while 1:
-    data = fread(512)
-    if not data:
-      raise ValueError('EOF in GPG ASCII armor.')
-    if items[-1][-1:] == '\n' and data.startswith('-'):
+
+  def yield_data_chunks(_a2b=binascii.a2b_base64, _crc24=crc24):
+    buf, is_in_header, crc = '\n', True, _crc24('')
+
+    try:
+      while 1:
+        data = fread(512)  # Anything >= 1 works here.
+        if not data:
+          raise ValueError('EOF in GPG ASCII armor.')
+        data = data.replace('\r', '')
+        if not data:
+          continue
+        if is_in_header:  # Skip over header.
+          if buf[-1:] == '\n' and data[0] == '\n':
+            data, is_in_header = data[1:], False
+          else:
+            i = data.find('\n\n')
+            if i >= 0:
+              data, is_in_header = data[i + 2:], False
+            else:
+              buf = data[-1:]  # Keep last '\n', if any.
+              continue
+          buf = ''
+        i = data.find('-')
+        if i >= 0:
+          buf += data[:i].replace('\n', '')
+          data = data[i:]
+          break
+        buf += data.replace('\n', '')
+        s = len(buf)
+        if s > 12:
+          t = (s - 9) & ~3  # Keep last 5 for checksum, keep 4 for last few bytes.
+          i = buf.find('=')
+          if 0 <= i < t:
+            raise ValueError('Too much padding at end of GPG ASCII armor base64.')
+          bdata, buf = _a2b(buf[:t]), buf[t:]
+          crc = _crc24(bdata, crc)
+          yield bdata
       if len(data) < 26:
         data += fread(26 - len(data))
-      break
-    i = data.find('\n-')
-    if i >= 0:
-      items.append(data[:i])
-      data = data[i + 1:]
-      if len(data) < 26:
-        data += fread(26 - len(data))
-      break
-    items.append(data)
-  if not (data.startswith('-----END PGP MESSAGE-----') and data[25 : 26] in '\r\n'):
-    raise ValueError('Bad end of GPG ASCII armor.')
-  # !! TODO(pts): Use less memory by streaming the binary data.
-  data = ''.join(items).replace('\r\n', '\n').replace('\r', '\n').rstrip('\n')
-  del items
-  k = data.rfind('=')
-  if k <= 0:
-    raise ValueError('Missing GPG ASCII armor checksum.')
-  if len(data) != k + 5:
-    raise ValueError('GPG ASCII armor checksum must be 4 bytes.')
-  try:
-    checksum = binascii.a2b_base64(data[k + 1:])
-  except binascii.Error:
-    raise ValueError('Bad GPG ASCII armor checksum base64.')
-  checksum, = struct.unpack('>L', '\0' + checksum)
-  i = 0
-  while i < k:
-    j = data.find('\n', i)
-    if i == j:
-      break
-    i = j + 1  # Ignore armor header line.
-  i
-  try:
-    data = binascii.a2b_base64(data[i + 1 : k])
-  except binascii.Error:
-    raise ValueError('Bad GPG ASCII armor data base64.')
-  if crc24(data) != checksum:
-    raise ValueError('GPG ASCII armor checksum mismatch.')
-  return str_to_fread(data)
+      if not (data.startswith('-----END PGP MESSAGE-----') and data[25 : 26] in '\r\n'):
+        raise ValueError('Bad end of GPG ASCII armor.')
+      t = buf.rfind('=')
+      if t <= 0:
+        raise ValueError('Missing GPG ASCII armor checksum.')
+      if len(buf) != t + 5:
+        raise ValueError('GPG ASCII armor checksum must be 4 bytes.')
+      expected_crc = _a2b(buf[t + 1:])
+      expected_crc, = struct.unpack('>L', '\0' + expected_crc)
+      if buf[t - 2 : t] == '==':
+        i = t - 2
+      elif buf[t - 1 : t] == '=':
+        i = t - 1
+      else:
+        i = t
+      if buf.find('=') != i:
+        raise ValueError('Too much padding at end of GPG ASCII armor base64.')
+      bdata = _a2b(buf[:t])
+      crc = _crc24(bdata, crc)
+      if crc != expected_crc:
+        raise ValueError('GPG ASCII armor checksum mismatch.')
+      if bdata:
+        yield bdata
+    except binascii.Error:
+      raise ValueError('Bad GPG ASCII armor data base64.')
+
+  return iter_to_fread(yield_data_chunks())
 
 
 def yield_gpg_packets(fread):
@@ -416,7 +437,7 @@ def open_symmetric_gpg(f, passphrase):
       raise ValueError('Encrypted session key size must be %d for cipher_algo %s, got: %d' %
                        (KEYTABLE_SIZES[cipher_algo], CIPHER_ALGOS[cipher_algo], len(session_key)))
 
-  def yield_strs():
+  def yield_data_chunks():
     if data_ary:
       is_partial, data = data_ary.pop()
       yield data
@@ -430,7 +451,7 @@ def open_symmetric_gpg(f, passphrase):
     if not is_done:
       raise ValueError('Last packet must be a non-partial packet.')
 
-  return cipher_algo, session_key, has_mdc, iter_to_fread(yield_strs())
+  return cipher_algo, session_key, has_mdc, iter_to_fread(yield_data_chunks())
 
 
 class BadPassphraseError(ValueError):
