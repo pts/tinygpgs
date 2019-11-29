@@ -14,7 +14,6 @@ import sys
 import tinyveracrypt
 
 
-# TODO(pts): Get rid of this, inline both callers.
 def yield_gpg_binary_packets(fread, c0=''):
   while 1:
     if not c0:
@@ -246,7 +245,7 @@ def yield_gpg_packets(fread):
 
 
 CIPHER_ALGOS = {
-#    0: 'unencrypted',  # !! GPG can't produce this.
+    #0: 'unencrypted',  # gpg(1) can't decrypt it either.
     7: 'aes-128',
     8: 'aes-192',
     9: 'aes-256',
