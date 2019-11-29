@@ -479,42 +479,35 @@ def decrypt_symmetric_gpg(fread, of, passphrase):
     data1 = strxor_16(data + '\0' * (16 - len(data)), fre)[:len(data)]
     mdc_obj = None
   # By doing these checks we decrease the P above by better than /2**5.
-  if data1[0] == '\xa3' and ord(data1[1]) < 0x20:
-    pass  # Compressed packet.
-  elif has_mdc and data1.startswith('\xd3\x14'):
-    pass  # MDC without any literal packet.
-  elif data1[0] in '\xac\xad\xae\xcb':
-    pass  # Literal packet, non-indeterminate.
+  if data1[0] == '\xa3':  # Indeterminate, packet_type == 8.
+    if ord(data1[1]) >= 0x20:  # GPG 2.1.18 has 0..3 defined.
+      raise ValueError('Bad passphrase (invalid compress_algo).')
+    compress_algo = ord(data1[1])
+    data1 = data1[2:]
   else:
-    raise BadPassphraseError('Bad passphrase (bad packet type).')
+    if has_mdc and data1.startswith('\xd3\x14'):
+      pass  # MDC without any literal packet.
+    elif data1[0] in '\xac\xad\xae\xcb':
+      pass  # Literal packet, non-indeterminate.
+    else:
+      raise BadPassphraseError('Bad passphrase (bad packet type).')
+    compress_algo = 0  # Uncompressed.
+  if compress_algo == 0:
+    zd = None  # Uncompressed.
+  elif compress_algo == 1:
+    import zlib
+    zd = zlib.decompressobj(-13)
+  elif compress_algo == 2:
+    import zlib
+    zd = zlib.decompressobj(15)
+  elif compress_algo == 3:
+    raise ValueError('!! bzip2 compression not supported.')
+  else:
+    raise ValueError('Unknown compress_algo: %d' % compress_algo)
 
   def yield_data_chunks(data1, data):
-    b = ord(data1[0])  # 0xa3 for compressed.
-    if not b & 128:
-      raise ValueError('Tag bit 7 expected -- bad passphrase?')
-    if b & 64:
-      packet_type1, is_indeterminate = b & 63, False
-    else:
-      packet_type1, is_indeterminate = (b & 63) >> 2, (b & 3) == 3
-    zd = None
-    if packet_type1 == 8 and is_indeterminate:  # Compressed packet.
-      b = ord(data1[1])
-      if b == 0:
-        zd = None  # Uncompressed.
-      elif b == 1:
-        import zlib
-        zd = zlib.decompressobj(-13)
-      elif b == 2:
-        import zlib
-        zd = zlib.decompressobj(15)
-      elif b == 3:
-        raise ValueError('bzip2 compression not supported.')
-      else:
-        raise ValueError('Unknown compression: %d' % b)
-      if zd:
-        data1 = zd.decompress(data1[2:])  # Can raise zlib.error.
-      else:
-        data1 = data1[2:]
+    if zd:
+      data1 = zd.decompress(data1)  # Can raise zlib.error.
     yield data1
     if len(data) == 16:
       while 1:
