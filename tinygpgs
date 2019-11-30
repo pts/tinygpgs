@@ -739,9 +739,16 @@ def decrypt_symmetric_gpg(fread, of, passphrase):
 
 
 def main(argv):
-  of = sys.stdout
-  if len(argv) > 1:
-    passphrase = argv[1]
+  argv = list(argv)
+  if len(argv) > 3 and argv[1] == '-d' and argv[2] == '--pinentry-mode' and argv[3] == 'loopback':
+    del argv[2 : 4]
+  if len(argv) not in (2, 3) or argv[1] != '-d':
+    sys.stderr.write(
+        'tinygpgs: decrypt symmetric encrypted GPG files\n'
+        'usage: %s -d <INPUT.BIN.GPG >INPUT.BIN\n' % argv[0])
+    sys.exit(1)
+  if len(argv) > 2:
+    passphrase = argv[2]
   else:
     passphrase = prompt_passphrase(False)
   decrypt_symmetric_gpg(sys.stdin.read, sys.stdout, passphrase)
