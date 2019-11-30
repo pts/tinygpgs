@@ -7,6 +7,10 @@
 #
 # OpenPGP is defined in https://tools.ietf.org/html/rfc4880
 #
+# !! Add encryption (-c) support.
+# !! Add Python 3 support.
+# !! Add shebang, help and docs.
+#
 
 import struct
 import sys
