@@ -512,17 +512,17 @@ def decrypt_symmetric_gpg(fread, of, passphrase):
     raise ValueError('EOF in block 0.')
   data1 = strxor_16(data, fre)
   fre = encrypt_func(data)
-  queue = []
+  mdc_queue = []
   if has_mdc:
-    mdc_obj = tinyveracrypt.HASH_DIGEST_PARAMS['sha1'][0](data1)
     exp2 = data1[-2:]
     data = fread(16)
     if len(data) != 16:  # Always true, encrypted data includes 22 bytes of MDC packet.
       raise ValueError('EOF in block 1.')
+    mdc_obj = tinyveracrypt.HASH_DIGEST_PARAMS['sha1'][0](data1)
+    mdc_obj.update(exp2)
     data1 = strxor_16(data, fre)
     if data1[:2] != exp2:  # We don't detect bad passphrase with P = 1./2**16.
       raise BadPassphraseError('Bad passphrase (MDC repeat).')
-    queue.append(data1)
     data1 = data1[2:]
   else:
     exp2 = strxor_2(fre[:2], data1[-2:])
@@ -543,9 +543,11 @@ def decrypt_symmetric_gpg(fread, of, passphrase):
     if ord(data1[1]) >= 0x20:  # GPG 2.1.18 has 0..3 defined.
       raise ValueError('Bad passphrase (invalid compress_algo).')
     compress_algo = ord(data1[1])
+    if mdc_obj:
+      mdc_obj.update(data1[:2])
     data1 = data1[2:]
   else:
-    if has_mdc and data1.startswith('\xd3\x14'):
+    if mdc_obj and data1.startswith('\xd3\x14'):
       pass  # MDC without any literal packet.
     elif data1[0] in '\xac\xad\xae\xcb':
       pass  # Literal packet, non-indeterminate.
@@ -565,54 +567,64 @@ def decrypt_symmetric_gpg(fread, of, passphrase):
     zd = bz2.BZ2Decompressor()
   else:
     raise ValueError('Unknown compress_algo: %d' % compress_algo)
+  if mdc_obj:
+    # We don't process data1 yet, because we want to remove the MDC packet
+    # (22 bytes, packet_type == 19, starts with '\xd3\x14') from the end first.
+    mdc_queue.append(data1)
+    data1 = ''
 
   def yield_data_chunks(data1, data):
     if zd:
       data1 = zd.decompress(data1)  # Can raise zlib.error.
     yield data1
+    data1 = ''
     if len(data) == 16:
       while 1:
         fre = encrypt_func(data)
         data = fread(16)
         if len(data) < 16:
           data1 = strxor_16(data + '\0' * (16 - len(data)), fre)[:len(data)]
-          if mdc_obj:
-            queue.append(data1)
-          if zd:
-            try:
-              data1 = zd.decompress(data1)
-            except EOFError:  # By bz2.BZ2Decompressor.
-              data1 = ''
-          yield data1
           break
         data1 = strxor_16(data, fre)
         if mdc_obj:
-          queue.append(data1)
-          if len(queue) > 2:  # 2 * 16 - 2 >= 22.
-            mdc_obj.update(queue.pop(0))
-        if zd:  # TODO(pts): Do larger buffering. Does it speed it up?
-          try:
+          if len(mdc_queue) >= 2:
+            data2 = mdc_queue.pop(0)
+            mdc_obj.update(data2)
+            if zd:
+              data2 = zd.decompress(data2)
+            yield data2
+          mdc_queue.append(data1)
+          # Now len(mdc_queue) >= 2, and it contains enough bytes (>= 22)
+          # for an MDC packet: 2 * 16 - len(exp2) - len('\xd3\x14') >= 22.
+        else:
+          if zd:  # TODO(pts): Do larger buffering. Does it speed it up?
             data1 = zd.decompress(data1)
-          except EOFError:  # By bz2.BZ2Decompressor.
-            data1 = ''
-        yield data1
+          yield data1
+    # Now data1 is the last plaintext chunk to process.
+    if mdc_obj:
+      mdc_queue.append(data1)
+      data1 = ''.join(mdc_queue)
+      del mdc_queue[:]
+      if len(data1) < 22:
+        raise ValueError('EOF in encrypted data before MDC packet.')
+      if data1[-22 : -20] != '\xd3\x14':  # packet_type == 19.
+        raise ValueError('Bad MDC packet header.')
+      data1, mdc = data1[:-22], data1[-20:]
+      mdc_obj.update(data1)
+      mdc_obj.update('\xd3\x14')
+      if mdc_obj.digest() != mdc:
+        raise ValueError('MDC mismatch, message may have been tampered with.')
     if zd:
-      if getattr(zd, 'flush', None):
-        data1 = zd.flush()
+      data1 = zd.decompress(data1)
+    yield data1
+    if zd and getattr(zd, 'flush', None):
+      data1 = zd.flush()
       yield data1
-      # Ignore zd.unused_data (22 bytes of mdc).
-      # !! Don't even zd.decompress these last 22 bytes, skip EOFError above.
 
   fread2 = iter_to_fread(yield_data_chunks(data1, data))
-  done_state, mdc = 0, None
+  done_state = 0
   for packet_type, is_partial, data in yield_gpg_binary_packets(fread2):
-    if done_state in (0, 2) and packet_type == 19 and has_mdc:  # MDC.
-      if len(data) != 20:
-        raise ValueError('MDC size must be 20, got: %d' % len(data))
-      mdc = data
-      done_state = 3
-      continue
-    if done_state in (2, 3):
+    if done_state == 2:
       raise ValueError('Unexpected packet after literal data: %d' %
                        packet_type)
     if packet_type != 11:
@@ -629,16 +641,8 @@ def decrypt_symmetric_gpg(fread, of, passphrase):
       data = data[6 + filename_size:]
     of.write(data)
     done_state = 1 + (not is_partial)
-  if done_state not in (2, 3):
+  if done_state == 1:
     raise ValueError('Missing last literal packet.')
-  if has_mdc:
-    queue = ''.join(queue)
-    if len(queue) < 22 or queue[-22 : -20] != '\xd3\x14':
-      raise ValueError('Missing MDC packet.')
-    mdc = queue[-20:]
-    mdc_obj.update(queue[:-20])
-    if mdc_obj.digest() != mdc:
-      raise ValueError('MDC mismatch, message may be tampered with.')
 
 
 def main(argv):
