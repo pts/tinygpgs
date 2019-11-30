@@ -327,6 +327,7 @@ def yield_gpg_packets(fread):
 
 CIPHER_ALGOS = {
     #0: 'unencrypted',  # gpg(1) can't decrypt it either.
+    2: '3des',  # With 192-bit key.
     3: 'cast5',  # With 128-bit key.
     4: 'blowfish',  # With 128-bit key, 16 rounds.
     7: 'aes-128',
@@ -339,7 +340,7 @@ CIPHER_ALGOS = {
 CIPHER_ALGOS_ALL = {
     0: 'unencrypted',  # gpg(1) can't decrypt it either.
     1: 'idea',
-    2: '3des',
+    2: '3des',  # With 192-bit key.
     3: 'cast5',  # With 128-bit key.
     4: 'blowfish',  # With 128-bit key, 16 rounds.
     5: 'safer-sk128',
@@ -367,6 +368,7 @@ CIPHER_ALGOS_ALL = {
 }
 
 KEYTABLE_SIZES = {
+    2: 24,
     3: 16,
     4: 16,
     7: 16,
@@ -435,9 +437,12 @@ def get_gpg_cipher(cipher_algo, keytable):
   # (2001-06-01) and 2.2.17 (2019-07-09); https://en.wikipedia.org/wiki/GNU_Privacy_Guard says that CAST5 has been the default
   # cipher since the beginning (GPGP 0.9.x, 1999) until <2.1.
   #
-  # !! Add PyCrypto support for 'idea', '3des', 'twofish-256'. These
+  # !! Add PyCrypto support for 'idea', 'twofish-256'. These
   #    are the remaining ones in the OpenPGP RFC.
-  if cipher_algo == 3:  # !! TODO(pts): Add Python implementation.
+  if cipher_algo == 2:
+    import Crypto.Cipher._DES3
+    return Crypto.Cipher._DES3.new(keytable), 8
+  elif cipher_algo == 3:  # !! TODO(pts): Add Python implementation.
     import Crypto.Cipher._CAST
     return Crypto.Cipher._CAST.new(keytable), 8
   elif cipher_algo == 4:
