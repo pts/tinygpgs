@@ -333,6 +333,8 @@ CIPHER_ALGOS = {
     7: 'aes-128',
     8: 'aes-192',
     9: 'aes-256',
+    10: 'twofish-256',
+    303: 'twofish-128',
 }
 
 
@@ -374,6 +376,8 @@ KEYTABLE_SIZES = {
     7: 16,
     8: 24,
     9: 32,
+    10: 32,
+    303: 16,
 }
 
 HASH_ALGOS = {
@@ -451,6 +455,9 @@ def get_gpg_cipher(cipher_algo, keytable):
   elif cipher_algo in (7, 8, 9):  # TODO(pts): Use Crypto.Cipher._AES.new(keytable), if available.
     import Crypto.Cipher._AES
     return Crypto.Cipher._AES.new(keytable), 16
+  elif cipher_algo in (10, 303):
+    import twofish  # !! TODO(pts): Inline Python implementation.
+    return twofish.Twofish(keytable), 16
   else:
     raise ValueError('Unsupported cipher_algo: %s' % CIPHER_ALGOS[cipher_algo])
 
