@@ -269,6 +269,7 @@ def yield_gpg_packets(fread):
 
 CIPHER_ALGOS = {
     #0: 'unencrypted',  # gpg(1) can't decrypt it either.
+    3: 'cast5',  # With 128-bit key.
     7: 'aes-128',
     8: 'aes-192',
     9: 'aes-256',
@@ -307,6 +308,7 @@ CIPHER_ALGOS_ALL = {
 }
 
 KEYTABLE_SIZES = {
+    3: 16,
     7: 16,
     8: 24,
     9: 32,
@@ -360,6 +362,25 @@ def iter_to_fread(iter_str):
     return result
 
   return fread
+
+
+def get_gpg_cipher(cipher_algo, keytable):
+  """Returns (codebook, block_size)."""
+  if KEYTABLE_SIZES[cipher_algo] != len(keytable):
+    raise ValueError('Session key must be %d bytes for cipher_algo %s, got: %d' %
+                     (KEYTABLE_SIZES[cipher_algo], CIPHER_ALGOS[cipher_algo], len(keytable)))
+  # TODO(pts): Use MODE_CFB and MODE_OPENPGP for speed.
+  #
+  # The ciphers below (CAST5 and AES) cover the GPG defaults between 1.0.6
+  # (2001-06-01) and 2.2.17 (2019-07-09); https://en.wikipedia.org/wiki/GNU_Privacy_Guard says that CAST5 has been the default
+  # cipher since the beginning (GPGP 0.9.x, 1999) until <2.1.
+  if cipher_algo == 3:  # TODO(pts): Add Python implementation.
+    import Crypto.Cipher._CAST
+    return Crypto.Cipher._CAST.new(keytable), 8
+  elif cipher_algo in (7, 8, 9):  # TODO(pts): Use Crypto.Cipher._AES.new(keytable), if available.
+    return tinyveracrypt.new_aes(keytable), 16
+  else:
+    raise ValueError('Unsupported cipher_algo: %s' % CIPHER_ALGOS[cipher_algo])
 
 
 def open_symmetric_gpg(f, passphrase):
@@ -460,14 +481,14 @@ def open_symmetric_gpg(f, passphrase):
   if len(data) > i:  # Encrypted session key.
     if s2k_type == 0:
       raise ValueError('Encrypted session key needs salt.')
-    strxor_16 = tinyveracrypt.make_strxor(16)  # For AES block size.
-    codebook = tinyveracrypt.new_aes(session_key)
+    codebook, bs = get_gpg_cipher(cipher_algo, session_key)
+    strxor_bs = tinyveracrypt.make_strxor(bs)  # For cipher_algo block size.
     encrypt_func = codebook.encrypt
-    fre = encrypt_func('\0' * 16)
+    fre = encrypt_func('\0' * bs)
     session_key = []
-    for i in xrange(i, len(data), 16):
-      datae = data[i : i + 16]
-      data1 = strxor_16(datae + '\0' * (16 - len(datae)), fre)[:len(datae)]
+    for i in xrange(i, len(data), bs):
+      datae = data[i : i + bs]
+      data1 = strxor_bs(datae + '\0' * (bs - len(datae)), fre)[:len(datae)]
       if session_key:
         session_key.append(data1)
       else:
@@ -475,7 +496,7 @@ def open_symmetric_gpg(f, passphrase):
         if cipher_algo not in CIPHER_ALGOS:
           raise ValueError('Unknown encrypted session key cipher_algo: %d' % cipher_algo)
         session_key.append(data1[1:])
-      if len(datae) < 16:
+      if len(datae) < bs:
         break
       fre = encrypt_func(datae)
     session_key = ''.join(session_key)
@@ -511,41 +532,43 @@ def decrypt_symmetric_gpg(fread, of, passphrase):
   print >>sys.stderr, 'info: GPG symmetric session has_mdc=%d cipher_algo=%s len(session_key)=%d' % (
       int(has_mdc), CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), len(session_key))
   #print (cipher_algo, session_key, has_mdc)
-  strxor_16 = tinyveracrypt.make_strxor(16)  # For AES block size.
   strxor_2 = tinyveracrypt.make_strxor(2)
-  codebook = tinyveracrypt.new_aes(session_key)
+  codebook, bs = get_gpg_cipher(cipher_algo, session_key)
+  strxor_bs = tinyveracrypt.make_strxor(bs)  # For cipher_algo block size.
   encrypt_func = codebook.encrypt
-  fre = encrypt_func('\0' * 16)
-  data = fread(16)
-  if len(data) != 16:
+  fre = encrypt_func('\0' * bs)
+  data = fread(bs)
+  if len(data) != bs:
     raise ValueError('EOF in block 0.')
-  data1 = strxor_16(data, fre)
+  data1 = strxor_bs(data, fre)
   fre = encrypt_func(data)
-  mdc_queue = []
   if has_mdc:
     exp2 = data1[-2:]
-    data = fread(16)
-    if len(data) != 16:  # Always true, encrypted data includes 22 bytes of MDC packet.
+    data = fread(bs)
+    if len(data) != bs:  # Always true, encrypted data includes 22 bytes of MDC packet.
       raise ValueError('EOF in block 1.')
     mdc_obj = tinyveracrypt.HASH_DIGEST_PARAMS['sha1'][0](data1)
     mdc_obj.update(exp2)
-    data1 = strxor_16(data, fre)
-    if data1[:2] != exp2:  # We don't detect bad passphrase with P = 1./2**16.
+    data1 = strxor_bs(data, fre)
+    if data1[:2] != exp2:  # We don't detect bad passphrase with P = 1./2**bs.
       raise BadPassphraseError('Bad passphrase (MDC repeat).')
     data1 = data1[2:]
+    mdc_queue = []
+    # Number of blocks to which 22 + 4 bytes fit. See below why.
+    mdc_min_queue_size = (22 + 4 + bs - 1) // bs
   else:
     exp2 = strxor_2(fre[:2], data1[-2:])
     got2 = fread(2)
     if len(got2) != 2:
       raise ValueError('EOF in block got2.')
-    if exp2 != got2:  # We don't detect bad passphrase with P = 1./2**16.
+    if exp2 != got2:  # We don't detect bad passphrase with P = 1./2**bs.
       raise BadPassphraseError('Bad passphrase (non-MDC repeat).')
     fre = encrypt_func(data[2:] + got2)
-    data = fread(16)
+    data = fread(bs)
     # On empty plaintext, len(data) == 8 here.
     if len(data) < 2:
       raise ValueError('EOF in block 1.')
-    data1 = strxor_16(data + '\0' * (16 - len(data)), fre)[:len(data)]
+    data1 = strxor_bs(data + '\0' * (bs - len(data)), fre)[:len(data)]
     mdc_obj = None
   # By doing these checks we decrease the P above by better than /2**5.
   if data1[0] == '\xa3':  # Indeterminate, packet_type == 8.
@@ -589,24 +612,25 @@ def decrypt_symmetric_gpg(fread, of, passphrase):
       data1 = zd.decompress(data1)  # Can raise zlib.error.
     yield data1
     data1 = ''
-    if len(data) == 16:
+    if len(data) == bs:
       while 1:
         fre = encrypt_func(data)
-        data = fread(16)
-        if len(data) < 16:
-          data1 = strxor_16(data + '\0' * (16 - len(data)), fre)[:len(data)]
+        data = fread(bs)
+        if len(data) < bs:
+          data1 = strxor_bs(data + '\0' * (bs - len(data)), fre)[:len(data)]
           break
-        data1 = strxor_16(data, fre)
+        data1 = strxor_bs(data, fre)
         if mdc_obj:
-          if len(mdc_queue) >= 2:
+          if len(mdc_queue) >= mdc_min_queue_size:
             data2 = mdc_queue.pop(0)
             mdc_obj.update(data2)
             if zd:
               data2 = zd.decompress(data2)
             yield data2
           mdc_queue.append(data1)
-          # Now len(mdc_queue) >= 2, and it contains enough bytes (>= 22)
-          # for an MDC packet: 2 * 16 - len(exp2) - len('\xd3\x14') >= 22.
+          # Now len(mdc_queue) >= min_queue_size, and it contains enough
+          # bytes (>= 22) for an MDC packet: mdc_min_queue_size * bs -
+          # len(exp2) - len('\xd3\x14') >= 22.
         else:
           if zd:  # TODO(pts): Do larger buffering. Does it speed it up?
             data1 = zd.decompress(data1)
