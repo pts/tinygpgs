@@ -432,10 +432,15 @@ def open_symmetric_gpg(f, passphrase):
     count = len(sp)
   while session_key_remaining > 0:
     d, c = digest_func('\0' * len(session_key)), count
-    while c > len(sp):
-      d.update(sp)
-      c -= len(sp)
-    d.update(sp[:c])
+    if c >> 16:  # Speedup: run little Python code only.
+      cx = (1 << 16) // len(sp)
+      spx = sp * cx  # At most 64 KiB of memory use.
+      while c >= len(spx):
+        d.update(spx)
+        c -= len(spx)
+      assert not c >> 16
+    d.update(sp * (c // len(sp)))  # At most 64 KiB.
+    d.update(sp[:c % len(sp)])
     session_key.append(d.digest())
     session_key_remaining -= len(session_key[-1])
   session_key = ''.join(session_key)[:keytable_size]
