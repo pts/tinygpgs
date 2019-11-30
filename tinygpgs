@@ -328,6 +328,13 @@ S2K_TYPES = {
     3: 'iterated-salted',
 }
 
+COMPRESS_ALGOS = {
+    0: 'uncompressed',
+    1: 'zip',
+    2: 'zlib',
+    3: 'bzip2',
+}
+
 
 def iter_to_fread(iter_str):
   data_ary, iter_str = [buffer('')], iter(iter_str)
@@ -501,6 +508,8 @@ def decrypt_symmetric_gpg(fread, of, passphrase):
   cipher_algo, session_key, has_mdc, fread = open_symmetric_gpg(
       fread, passphrase)
   del passphrase
+  print >>sys.stderr, 'info: GPG symmetric session has_mdc=%d cipher_algo=%s len(session_key)=%d' % (
+      int(has_mdc), CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), len(session_key))
   #print (cipher_algo, session_key, has_mdc)
   strxor_16 = tinyveracrypt.make_strxor(16)  # For AES block size.
   strxor_2 = tinyveracrypt.make_strxor(2)
@@ -554,6 +563,8 @@ def decrypt_symmetric_gpg(fread, of, passphrase):
     else:
       raise BadPassphraseError('Bad passphrase (bad packet type).')
     compress_algo = 0  # Uncompressed.
+  print >>sys.stderr, 'info: GPG symmetric compress_algo=%s' % (
+      COMPRESS_ALGOS.get(compress_algo, compress_algo))
   if compress_algo == 0:
     zd = None  # Uncompressed.
   elif compress_algo == 1:
