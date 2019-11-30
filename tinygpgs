@@ -274,6 +274,38 @@ CIPHER_ALGOS = {
     9: 'aes-256',
 }
 
+
+# https://github.com/gpg/libgcrypt/blob/e5c4cf0efb8fd297963e6b4392ab98c41dbad536/src/gcrypt.h.in#L919
+CIPHER_ALGOS_ALL = {
+    0: 'unencrypted',  # gpg(1) can't decrypt it either.
+    1: 'idea',
+    2: '3des',
+    3: 'cast5',  # With 128-bit key.
+    4: 'blowfish',
+    5: 'safer-sk128',
+    6: 'des-sk',
+    7: 'aes-128',
+    8: 'aes-192',
+    9: 'aes-256',
+    10: 'twofish-256',
+    301: 'rc4',  # 'arcfour'.
+    302: 'des',  # Single-key, 56-bit DES.
+    303: 'twofish-128',
+    304: 'serpent-128',
+    305: 'serpent-192',
+    306: 'serpent-256',
+    307: 'rfc2268-ron-40',
+    308: 'rfc2268-ron-128',
+    309: 'rfc4269-seed',
+    310: 'camellia-128',
+    311: 'camellia-192',
+    312: 'camellia-256',
+    313: 'salsa20',
+    314: 'salsa20-r12',
+    315: 'rfc-5830-gost',  # GOST 28147-89.
+    316: 'chacha20',
+}
+
 KEYTABLE_SIZES = {
     7: 16,
     8: 24,
@@ -343,12 +375,6 @@ def open_symmetric_gpg(f, passphrase):
       '>BBBB', buffer(data, 0, 4))
   if version != 4:
     raise ValueError('SKESK version 4 expected, got %d' % version)
-  if cipher_algo not in CIPHER_ALGOS:
-    raise ValueError('Unknown SKESK cipher_algo: %d' % cipher_algo)
-  if s2k_type not in S2K_TYPES:
-    raise ValueError('Unknown SKESK s2k_type: %d' % s2k_type)
-  if hash_algo not in HASH_ALGOS:
-    raise ValueError('Unknown SKESK hash_algo: %d' % hash_algo)
   i = 4
   if s2k_type == 0:
     salt, count = '', 0
@@ -365,8 +391,16 @@ def open_symmetric_gpg(f, passphrase):
       count = (16 + (b & 15)) << ((b >> 4) + 6)
     else:
       count = 0
-  #print 'SKESK cipher_algo=%s s2k_type=%s hash_algo=%s count=%d salt=%r encrypted_session_key=%r' % (
-  #    CIPHER_ALGOS[cipher_algo], S2K_TYPES[s2k_type], HASH_ALGOS[hash_algo], count, salt, data[i:])
+  print >>sys.stderr, 'info: GPG symmetric cipher_algo=%s s2k_type=%s hash_algo=%s count=%d len(salt)=%d len(encrypted_session_key)=%d' % (
+      CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), S2K_TYPES.get(s2k_type, s2k_type), HASH_ALGOS.get(hash_algo, hash_algo), count, len(salt), len(data) - i)
+  #print >>sys.stderr, 'SKESK cipher_algo=%s s2k_type=%s hash_algo=%s count=%d salt=%r encrypted_session_key=%r' % (
+  #    CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), S2K_TYPES.get(s2k_type, s2k_type), HASH_ALGOS.get(hash_algo, hash_algo), count, salt, data[i:])
+  if cipher_algo not in CIPHER_ALGOS:
+    raise ValueError('Unknown SKESK cipher_algo: %d' % cipher_algo)
+  if s2k_type not in S2K_TYPES:
+    raise ValueError('Unknown SKESK s2k_type: %d' % s2k_type)
+  if hash_algo not in HASH_ALGOS:
+    raise ValueError('Unknown SKESK hash_algo: %d' % hash_algo)
   digest_func, _ = tinyveracrypt.HASH_DIGEST_PARAMS[HASH_ALGOS[hash_algo]]
   keytable_size = KEYTABLE_SIZES[cipher_algo]
   for packet_type, is_partial, data2 in iter_packets:
