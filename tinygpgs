@@ -12,6 +12,7 @@
 # !! Add encryption (-c) support.
 # !! Add Python 3 support.
 # !! Add shebang, help and docs.
+# !! Find ASCII armor later in the file, like how gpg(1) finds it.
 #
 # About memory usage with zlib: maximum zlib compression is 1032, maximum
 # uncompressed buffer size is 8176 bytes, thus its <8.05 MiB.
@@ -72,12 +73,139 @@ except ImportError:
       return strxor
 
 
-# --- Hashes (message digests, MDCs).
+# --- SHA-1 hash (message digest).
 
 
-def new_hash(hash, data=''):
-  import hashlib
-  return hashlib.new(hash, data)
+def _sha1_rotl32(x, y):
+  return ((x << y) | (x >> (32 - y))) & 0xffffffff
+
+
+def slow_sha1_process(block, hh, _izip=itertools.izip, _rotl=_sha1_rotl32):
+  w = [0] * 80
+  w[:16] = struct.unpack('>16L', block)
+  for i in xrange(16, 80):
+    w[i] = _rotl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1)
+  a, b, c, d, e = hh
+  for i in xrange(0, 20):
+    f = (b & c) | ((~b) & d)
+    a, b, c, d, e = (_rotl(a, 5) + f + e + 0x5a827999 + w[i]) & 0xffffffff, a, _rotl(b, 30), c, d
+  for i in xrange(20, 40):
+    f = b ^ c ^ d
+    a, b, c, d, e = (_rotl(a, 5) + f + e + 0x6ed9eba1 + w[i]) & 0xffffffff, a, _rotl(b, 30), c, d
+  for i in xrange(40, 60):
+    f = (b & c) | (b & d) | (c & d)
+    a, b, c, d, e = (_rotl(a, 5) + f + e + 0x8f1bbcdc + w[i]) & 0xffffffff, a, _rotl(b, 30), c, d
+  for i in xrange(60, 80):
+    f = b ^ c ^ d
+    a, b, c, d, e = (_rotl(a, 5) + f + e + 0xca62c1d6 + w[i]) & 0xffffffff, a, _rotl(b, 30), c, d
+  return [(x + y) & 0xffffffff for x, y in _izip(hh, (a, b, c, d, e))]
+
+
+del _sha1_rotl32  # Unpollute namespace.
+
+
+# Fallback pure Python implementation of SHA-1 based on
+# https://codereview.stackexchange.com/a/37669
+# It is about 162 times slower than OpenSSL's C implementation.
+#
+# Most users shouldn't be using this, because it's too slow in production
+# (as used in pbkdf2). Even Python 2.4 has sha.sha (autodetected below),
+# and Python >=2.5 has hashlib.sha1 (also autodetected below), so most
+# users don't need this implementation.
+class SlowSha1(object):
+  _h0 = (0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0)
+
+  block_size = 64
+  digest_size = 20
+
+  __slots__ = ('_buffer', '_counter', '_h')
+
+  def __init__(self, m=None):
+    self._buffer = ''
+    self._counter = 0
+    self._h = self._h0
+    if m is not None:
+      self.update(m)
+
+  def update(self, m):
+    if not isinstance(m, (str, buffer)):
+      raise TypeError('update() argument 1 must be string, not %s' % (type(m).__name__))
+    if not m:
+      return
+    buf, process = self._buffer, slow_sha1_process
+    lb, lm = len(buf), len(m)
+    self._counter += lm
+    self._buffer = None
+    if lb + lm < 64:
+      buf += str(m)
+      self._buffer = buf
+    else:
+      hh, i, _buffer = self._h, 0, buffer
+      if lb:
+        assert lb < 64
+        i = 64 - lb
+        hh = process(buf + m[:i], hh)
+      for i in xrange(i, lm - 63, 64):
+        hh = process(_buffer(m, i, 64), hh)
+      self._h = hh
+      self._buffer = m[lm - ((lm - i) & 63):]
+
+  def digest(self):
+    c = self._counter
+    if (c & 63) < 56:
+      return struct.pack('>5L', *slow_sha1_process(self._buffer + struct.pack('>c%dxQ' % (55 - (c & 63)), '\x80', c << 3), self._h))
+    else:
+      return struct.pack('>5L', *slow_sha1_process(struct.pack('>56xQ', c << 3), slow_sha1_process(self._buffer + struct.pack('>c%dx' % (~c & 63), '\x80'), self._h)))
+
+  def hexdigest(self):
+    return self.digest().encode('hex')
+
+  def copy(self):
+    other = type(self)()
+    other._buffer, other._counter, other._h = self._buffer, self._counter, self._h
+    return other
+
+
+# --- Hash (message digest, MDC) getters.
+
+
+SLOW_HASHES = {
+    'sha1': SlowSha1,
+}
+
+def new_hash(hash, data='', is_slow_hash=False):
+  hash = hash.replace('-', '').lower()
+  if not is_slow_hash:
+    try:
+      import hashlib  # Python >= 2.5.
+      return hashlib.new(hash, data)
+    except (ImportError, ValueError):
+      pass
+    # .upper() happens to work for SLOW_HASHES.keys().
+    module_name = 'Crypto.Hash._' + hash.upper()
+    try:
+      __import__(module_name)
+      digest_cons = sys.modules[module_name].new
+    except (ImportError, AttributeError):
+      digest_cons = None
+    if callable(digest_cons):
+      return digest_cons(data)
+    if hash == 'sha1':
+      try:  # Python 2.4.
+        import sha
+        return sha.sha(data)
+      except ImportError:
+        return SlowSha1(data)
+    if hash == 'md5':
+      try:  # Python 2.4.
+        import md5
+        return md5.md5(data)
+      except ImportError:
+        pass
+  digest_cons = SLOW_HASHES.get(hash)
+  if callable(digest_cons):
+    return digest_cons(data)
+  raise ValueError('Unsupported hash: %s' % hash)
 
 
 # --- AES block cipher.
@@ -980,7 +1108,7 @@ def try_crypto_cipher(cipher, is_slow_cipher, module_name, fallback_cons):
         (module_name, cipher))
 
 
-def get_cipher(cipher, is_slow_cipher=False):
+def new_cipher(cipher, is_slow_cipher=False):
   cipher = cipher.lower()
   # !! Cache the returned constructors (separately by is_slow_cipher).
   if cipher in ('cast5', 'cast5-128', 'cast-128'):
@@ -1404,11 +1532,11 @@ def get_gpg_cipher(cipher_algo, keytable, is_slow_cipher):
   # The ciphers below (CAST5 and AES) cover the GPG defaults between 1.0.6
   # (2001-06-01) and 2.2.17 (2019-07-09); https://en.wikipedia.org/wiki/GNU_Privacy_Guard says that CAST5 has been the default
   # cipher since the beginning (GPGP 0.9.x, 1999) until <2.1.
-  cipher_cons, block_size = get_cipher(CIPHER_ALGOS[cipher_algo], is_slow_cipher)
+  cipher_cons, block_size = new_cipher(CIPHER_ALGOS[cipher_algo], is_slow_cipher)
   return cipher_cons(keytable), block_size
 
 
-def open_symmetric_gpg(f, passphrase, is_slow_cipher):
+def open_symmetric_gpg(f, passphrase, is_slow_cipher, is_slow_hash):
   # https://tools.ietf.org/html/rfc4880
   # TODO(pts): Support the ASCII armor as well.
   is_prev_partial = False
@@ -1454,7 +1582,8 @@ def open_symmetric_gpg(f, passphrase, is_slow_cipher):
     raise ValueError('Unknown SKESK s2k_type: %d' % s2k_type)
   if hash_algo not in HASH_ALGOS:
     raise ValueError('Unknown SKESK hash_algo: %d' % hash_algo)
-  digest_func = lambda data='': new_hash(HASH_ALGOS[hash_algo], data)
+  digest_func = lambda data='': new_hash(HASH_ALGOS[hash_algo], data, is_slow_hash)
+  print >>sys.stderr, 'info: GPG symmetric is_py_hash=%d' % int(type(getattr(digest_func().update, 'im_func', None)) == type(lambda: 0))
   keytable_size = KEYTABLE_SIZES[cipher_algo]
   for packet_type, is_partial, data2 in iter_packets:
     break
@@ -1551,10 +1680,10 @@ class BadPassphraseError(ValueError):
   """Raised when a bad passphrase is detected early at decryption."""
 
 
-def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher):
+def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash):
   _buffer = buffer
   cipher_algo, session_key, has_mdc, fread = open_symmetric_gpg(
-      fread, passphrase, is_slow_cipher)
+      fread, passphrase, is_slow_cipher, is_slow_hash)
   del passphrase
   print >>sys.stderr, 'info: GPG symmetric session is_slow_cipher=%d has_mdc=%d cipher_algo=%s len(session_key)=%d' % (
       int(is_slow_cipher), int(has_mdc), CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), len(session_key))
@@ -1575,7 +1704,7 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher):
     data = fread(bs)
     if len(data) != bs:  # Always true, encrypted data includes 22 bytes of MDC packet.
       raise ValueError('EOF in block 1.')
-    mdc_obj = new_hash('sha1', data1)
+    mdc_obj = new_hash('sha1', data1, is_slow_hash)
     mdc_obj.update(exp2)
     data1 = strxor_bs(data, fre)
     if data1[:2] != exp2:  # We don't detect bad passphrase with P = 1./2**bs.
@@ -1758,11 +1887,14 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher):
 
 def main(argv):
   argv = list(argv)
-  is_slow_cipher = False
+  is_slow_cipher = is_slow_hash = False
   if len(argv) > 3 and argv[1] == '-d' and argv[2] == '--pinentry-mode' and argv[3] == 'loopback':
     del argv[2 : 4]
   if len(argv) > 2 and argv[1] == '-d' and argv[2] == '--slow-cipher':  # Not gpg(1).
     is_slow_cipher = True
+    del argv[2]
+  if len(argv) > 2 and argv[1] == '-d' and argv[2] == '--slow-hash':  # Not gpg(1).
+    is_slow_hash = True
     del argv[2]
   if len(argv) not in (2, 3) or argv[1] != '-d':
     sys.stderr.write(
@@ -1775,7 +1907,7 @@ def main(argv):
     # !! TODO(pts): Ask late for passphrase, after input syntax check.
     passphrase = prompt_passphrase(False)
   # !! Shorter report BadPassphraseError.
-  decrypt_symmetric_gpg(sys.stdin.read, sys.stdout, passphrase, is_slow_cipher)
+  decrypt_symmetric_gpg(sys.stdin.read, sys.stdout, passphrase, is_slow_cipher, is_slow_hash)
 
 
 if __name__ == '__main__':
