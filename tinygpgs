@@ -15,11 +15,6 @@
 # !! Add gpg(1) compatibility flags: --passphrase-repeat n, --passphrase-fd n, --passphrase-file file, --passphrase string.
 # !! Add better command-line parsing.
 #
-# About memory usage with zlib: maximum zlib compression is 1032, maximum
-# uncompressed buffer size is 8176 bytes, thus its <8.05 MiB.
-#
-# About memory usage with bzip2: Can be more. TODO(pts): Limit it.
-#
 
 import itertools
 import struct
@@ -2215,6 +2210,22 @@ def open_symmetric_gpg(f, passphrase, is_slow_cipher, is_slow_hash):
   return cipher_algo, session_key, has_mdc, iter_to_fread(yield_data_chunks())
 
 
+def get_yield_decompress_chunks(zd):
+  """Returns a generator which yields reasonably-side decompressed chunks.
+
+  Args:
+    zd: A zlib.decompressobj (or compatible) instance.
+  """
+  zd_decompress = zd.decompress
+
+  def yield_decompress_chunks(data):
+    yield zd_decompress(data, 8192)
+    while zd.unconsumed_tail:
+      yield zd_decompress(zd.unconsumed_tail, 8192)
+
+  return yield_decompress_chunks
+
+
 class BadPassphraseError(ValueError):
   """Raised when a bad passphrase is detected early at decryption."""
 
@@ -2297,21 +2308,32 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash):
     zd = bz2.BZ2Decompressor()
   else:
     raise ValueError('Unknown compress_algo: %d' % compress_algo)
+  zdml = None
   if zd:
     zd_decompress = zd.decompress
+    try:
+      zd_decompress('', 42)
+      if zd.unconsumed_tail != '':
+        raise ValueError
+      # Limit memory usage.
+      zdml = get_yield_decompress_chunks(zd)  # zlib has it.
+    except (TypeError, ValueError, AttributeError):
+      zdml = None  # lambda data1, _zdd: (_zdd(data1,))  # bz2 doesn't have it.
 
   def yield_data_chunks(data1, data, encrypt_func):
     if mdc_obj:
       # We don't process data1 yet, because we want to remove the MDC packet
       # (22 bytes, packet_type == 19, starts with '\xd3\x14') from the end first.
       mdc_queue = data1
-      data1 = ''
     else:
       mdc_queue = ''
-    if zd:
-      data1 = zd_decompress(data1)  # Can raise zlib.error.
-    yield data1
-    data1 = ''
+      if zdml:
+        for chunk in zdml(data1):
+          yield chunk
+      elif zd_decompress:
+        yield zd_decompress(data1)  # Can raise zlib.error.
+      else:
+        yield data1
     _fast_strxor = fast_strxor
     if _fast_strxor and type(encrypt_func) is type(lambda: 0):  # Not fast, C extension.
       _fast_strxor = None
@@ -2322,7 +2344,7 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash):
         data2 = fread(bs)
         if len(data2) < bs:
           fre = encrypt_func(data)
-          data1 = strxor_bs(data2 + '\0' * (bs - len(data2)), fre)[:len(data2)]
+          mdc_queue += strxor_bs(data2 + '\0' * (bs - len(data2)), fre)[:len(data2)]
           break
         data3 = _fast_strxor and fread(bs2bs)
         if data3:  # <FAST-DECRYPTION>: large prebuffered chunks.
@@ -2340,9 +2362,13 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash):
           #print >>sys.stderr, 'fast', lbs
           if mdc_queue:  # Flush mdc_queue before critical path.
             mdc_obj.update(mdc_queue)
-            if zd:
-              mdc_queue = zd_decompress(mdc_queue)
-            yield mdc_queue
+            if zdml:
+              for chunk in zdml(mdc_queue):
+                yield chunk
+            elif zd_decompress:
+              yield zd_decompress(mdc_queue)
+            else:
+              yield mdc_queue
           # Crypto.Cipher._AES.MODE_CFB and mode 5 don't work: they
           # produce different results even for long test vectors
           # https://github.com/ircmaxell/PHP-PasswordLib/blob/master/test/Data/Vectors/aes-cfb.test-vectors
@@ -2354,9 +2380,13 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash):
           data2 = _buffer(datad, 0, lbs - bsmdc)
           if mdc_obj:
             mdc_obj.update(data2)
-          if zd:
-            data2 = zd_decompress(data2)
-          yield data2
+          if zdml:
+            for chunk in zdml(data2):
+              yield chunk
+          elif zd_decompress:
+            yield zd_decompress(data2)
+          else:
+            yield data2
           if mdc_obj:  # Fill mdc_queue again.
             mdc_queue = datad[lbs - bsmdc : lbs]
         else:  # This branch happens only with empty*.bin.gpg, not even hellow*.bin.gpg.
@@ -2367,9 +2397,13 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash):
             if len(mdc_queue) >= bsmdc:
               data2 = _buffer(mdc_queue, 0, bs)
               mdc_obj.update(data2)
-              if zd:
-                data2 = zd_decompress(data2)
-              yield data2
+              if zdml:
+                for chunk in zdml(data2):
+                  yield chunk
+              elif zd_decompress:
+                yield zd_decompress(data2)
+              else:
+                yield data2
               mdc_queue = mdc_queue[bs:] + data1  # Short copy.
             else:
               mdc_queue += data1  # Short copy.
@@ -2377,28 +2411,33 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash):
             # bytes (>= 22) for an MDC packet: mdc_min_queue_size * bs -
             # len(exp2) - len('\xd3\x14') >= 22.
           else:
-            if zd:
-              data1 = zd_decompress(data1)
-            yield data1
-    # Now data1 is the last plaintext chunk to process.
-    if mdc_obj:
-      data1 = mdc_queue + data1
-      mdc_queue = ''
-      if len(data1) < 22:
+            if zdml:
+              for chunk in zdml(data1):
+                yield chunk
+            elif zd_decompress:
+              yield zd_decompress(data1)
+            else:
+              yield data1
+    if mdc_obj:  # Process mdc_queue.
+      if len(mdc_queue) < 22:
         raise ValueError('EOF in encrypted data before MDC packet.')
-      if data1[-22 : -20] != '\xd3\x14':  # packet_type == 19.
+      if mdc_queue[-22 : -20] != '\xd3\x14':  # packet_type == 19.
         raise ValueError('Bad MDC packet header.')
-      data1, mdc = _buffer(data1, 0, len(data1) - 22), _buffer(data1, len(data1) - 20)
-      mdc_obj.update(data1)
+      mdc_queue, mdc = _buffer(mdc_queue, 0, len(mdc_queue) - 22), _buffer(mdc_queue, len(mdc_queue) - 20)
+      mdc_obj.update(mdc_queue)
       mdc_obj.update('\xd3\x14')
       if _buffer(mdc_obj.digest()) != mdc:
         raise ValueError('MDC mismatch, message may have been tampered with.')
-    if zd:
-      data1 = zd_decompress(data1)
-    yield data1
+    if mdc_queue:
+      if zdml:
+        for chunk in zdml(mdc_queue):
+          yield chunk
+      elif zd_decompress:
+        yield zd_decompress(mdc_queue)
+      else:
+        yield mdc_queue
     if zd and getattr(zd, 'flush', None):
-      data1 = zd.flush()
-      yield data1
+      yield zd.flush()
 
   fread2 = iter_to_fread(yield_data_chunks(data1, data, encrypt_func))
   done_state = 0
