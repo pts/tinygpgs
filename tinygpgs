@@ -13,6 +13,8 @@
 # !! Add Python 3 support.
 # !! Add shebang, help and docs.
 # !! Find ASCII armor later in the file, like how gpg(1) finds it.
+# !! Add gpg(1) compatibility flags: --passphrase-repeat n, --passphrase-fd n, --passphrase-file file, --passphrase string.
+# !! Add better command-line parsing.
 #
 # About memory usage with zlib: maximum zlib compression is 1032, maximum
 # uncompressed buffer size is 8176 bytes, thus its <8.05 MiB.
