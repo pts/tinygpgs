@@ -2433,8 +2433,12 @@ def main(argv):
     passphrase = argv[2]
   else:
     passphrase = lambda: prompt_passphrase(False)
-  # !! Shorter report BadPassphraseError.
-  decrypt_symmetric_gpg(sys.stdin.read, sys.stdout, passphrase, is_slow_cipher, is_slow_hash)
+  try:
+    decrypt_symmetric_gpg(sys.stdin.read, sys.stdout, passphrase, is_slow_cipher, is_slow_hash)
+  except BadPassphraseError, e:
+    msg = str(e)
+    sys.stderr.write('fatal: %s%s\n' % (msg[0].lower(), msg[1:].rstrip('.')))
+    sys.exit(2)
 
 
 if __name__ == '__main__':
