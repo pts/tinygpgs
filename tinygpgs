@@ -1171,7 +1171,7 @@ def str_to_fread(data):
 def get_gpg_ascii_armor_fread(fread):
   import binascii  # For base64.
 
-  def yield_data_chunks(_a2b=binascii.a2b_base64, _crc24=crc24):
+  def yield_data_chunks(_a2b=binascii.a2b_base64, _crc24=crc24, _buffer=buffer):
     buf, is_in_header, crc = '\n', True, _crc24('')
 
     try:
@@ -1198,6 +1198,8 @@ def get_gpg_ascii_armor_fread(fread):
           buf += data[:i].replace('\n', '')
           data = data[i:]
           break
+        # This is a long string copy (`data' can be long), but there is no
+        # easy way around it.
         buf += data.replace('\n', '')
         s = len(buf)
         if s > 12:
@@ -1205,7 +1207,7 @@ def get_gpg_ascii_armor_fread(fread):
           i = buf.find('=')
           if 0 <= i < t:
             raise ValueError('Too much padding at end of GPG ASCII armor base64.')
-          bdata, buf = _a2b(buf[:t]), buf[t:]
+          bdata, buf = _a2b(_buffer(buf, 0, t)), buf[t:]
           crc = _crc24(bdata, crc)
           yield bdata
       if len(data) < 26:
@@ -1217,7 +1219,7 @@ def get_gpg_ascii_armor_fread(fread):
         raise ValueError('Missing GPG ASCII armor checksum.')
       if len(buf) != t + 5:
         raise ValueError('GPG ASCII armor checksum must be 4 bytes.')
-      expected_crc = _a2b(buf[t + 1:])
+      expected_crc = _a2b(_buffer(buf, t + 1))
       expected_crc, = struct.unpack('>L', '\0' + expected_crc)
       if buf[t - 2 : t] == '==':
         i = t - 2
@@ -1362,6 +1364,7 @@ def iter_to_fread(iter_str):
           data = buffer(iter_str.next())
         except StopIteration:
           break
+        # This may be a long copy, but there is no way around it.
         result.append(data[:remaining])
         data = buffer(data, len(result[-1]))
         remaining -= len(result[-1])
@@ -1442,7 +1445,7 @@ def open_symmetric_gpg(f, passphrase, is_slow_cipher):
     raise ValueError('EOF after SKESK packet.')
   if packet_type == 9:
     has_mdc = False
-    data_ary = [(is_partial, data2)]
+    data_ary = [is_partial, buffer(data2)]
   elif packet_type == 18:
     has_mdc = True
     if not data2:
@@ -1450,7 +1453,7 @@ def open_symmetric_gpg(f, passphrase, is_slow_cipher):
     version = ord(data2[0])
     if version != 1:
       raise ValueError('Integrity-protected packet version 1 expected, got: %d' % version)
-    data_ary = [(is_partial, data2[1:])]
+    data_ary = [is_partial, buffer(data2, 1)]
   else:
     raise ValueError('Expected symmetric data packet type, got: %d' % packet_type)
   del data2
@@ -1500,7 +1503,7 @@ def open_symmetric_gpg(f, passphrase, is_slow_cipher):
         cipher_algo = ord(data1[0])
         if cipher_algo not in CIPHER_ALGOS:
           raise ValueError('Unknown encrypted session key cipher_algo: %d' % cipher_algo)
-        session_key.append(data1[1:])
+        session_key.append(data1[1:])  # Short copy.
       if len(datae) < bs:
         break
       fre = encrypt_func(datae)
@@ -1511,7 +1514,8 @@ def open_symmetric_gpg(f, passphrase, is_slow_cipher):
 
   def yield_data_chunks():
     if data_ary:
-      is_partial, data = data_ary.pop()
+      is_partial, data = data_ary
+      del data_ary[:]  # Save memory.
       yield data
       is_done = not is_partial
     for packet_type2, is_partial, data in iter_packets:
@@ -1531,6 +1535,7 @@ class BadPassphraseError(ValueError):
 
 
 def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher):
+  _buffer = buffer
   cipher_algo, session_key, has_mdc, fread = open_symmetric_gpg(
       fread, passphrase, is_slow_cipher)
   del passphrase
@@ -1558,7 +1563,7 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher):
     data1 = strxor_bs(data, fre)
     if data1[:2] != exp2:  # We don't detect bad passphrase with P = 1./2**bs.
       raise BadPassphraseError('Bad passphrase (MDC repeat).')
-    data1 = data1[2:]
+    data1 = data1[2:]  # Short copy.
     mdc_queue = []
     # Number of blocks to which 22 + 4 bytes fit. See below why.
     mdc_min_queue_size = (22 + 4 + bs - 1) // bs
@@ -1569,7 +1574,7 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher):
       raise ValueError('EOF in block got2.')
     if exp2 != got2:  # We don't detect bad passphrase with P = 1./2**bs.
       raise BadPassphraseError('Bad passphrase (non-MDC repeat).')
-    fre = encrypt_func(data[2:] + got2)
+    fre = encrypt_func(data[2:] + got2)  # Short copy.
     data = fread(bs)
     # On empty plaintext, len(data) == 8 here.
     if len(data) < 2:
@@ -1583,7 +1588,7 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher):
     compress_algo = ord(data1[1])
     if mdc_obj:
       mdc_obj.update(data1[:2])
-    data1 = data1[2:]
+    data1 = data1[2:]  # Short copy.
   else:
     if mdc_obj and data1.startswith('\xd3\x14'):
       pass  # MDC without any literal packet.
@@ -1621,6 +1626,8 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher):
     if len(data) == bs:
       while 1:
         fre = encrypt_func(data)
+        # !! TODO(pts): Process up to 8192 bytes (rather than 8 or 16 bytes) at
+        # a time with PyCrypto C ciphers with MODE_CFB support.
         data = fread(bs)
         if len(data) < bs:
           data1 = strxor_bs(data + '\0' * (bs - len(data)), fre)[:len(data)]
@@ -1650,10 +1657,10 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher):
         raise ValueError('EOF in encrypted data before MDC packet.')
       if data1[-22 : -20] != '\xd3\x14':  # packet_type == 19.
         raise ValueError('Bad MDC packet header.')
-      data1, mdc = data1[:-22], data1[-20:]
+      data1, mdc = _buffer(data1, 0, len(data1) - 22), _buffer(data1, len(data1) - 20)
       mdc_obj.update(data1)
       mdc_obj.update('\xd3\x14')
-      if mdc_obj.digest() != mdc:
+      if _buffer(mdc_obj.digest()) != mdc:
         raise ValueError('MDC mismatch, message may have been tampered with.')
     if zd:
       data1 = zd.decompress(data1)
@@ -1679,7 +1686,7 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher):
       if len(data) < 6 + filename_size:
         raise ValueError('First literal packet too short for filename.')
       # First we get filename, then the date (4 bytes), 4 byte Unix timestamp.
-      data = data[6 + filename_size:]
+      data = _buffer(data, 6 + filename_size)
     of.write(data)
     done_state = 1 + (not is_partial)
   if done_state == 1:
