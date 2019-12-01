@@ -7,7 +7,6 @@
 #
 # OpenPGP is defined in https://tools.ietf.org/html/rfc4880
 #
-# !! Add binary mode for stdin and stdout.
 # !! Add tests for ciphers and hashes.
 # !! Add encryption (-c) support.
 # !! Add Python 3 support.
@@ -41,6 +40,18 @@ def prompt_passphrase(do_passphrase_twice):
     if passphrase != passphrase2:
       raise SystemExit('passphrases do not match')
   return passphrase
+
+
+# --- Platform-specific code.
+
+
+def set_fd_binary(fd):
+  """Make sure that os.write(fd, ...) doesn't write extra \r bytes etc."""
+  import sys
+  if sys.platform.startswith('win'):
+    import os
+    import msvcrt
+    msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
 
 
 # --- strxor.
@@ -2433,8 +2444,12 @@ def main(argv):
     passphrase = argv[2]
   else:
     passphrase = lambda: prompt_passphrase(False)
+  inf = sys.stdin
+  set_fd_binary(inf.fileno())
+  of = sys.stdout
+  set_fd_binary(of.fileno())
   try:
-    decrypt_symmetric_gpg(sys.stdin.read, sys.stdout, passphrase, is_slow_cipher, is_slow_hash)
+    decrypt_symmetric_gpg(inf.read, of, passphrase, is_slow_cipher, is_slow_hash)
   except BadPassphraseError, e:
     msg = str(e)
     sys.stderr.write('fatal: %s%s\n' % (msg[0].lower(), msg[1:].rstrip('.')))
