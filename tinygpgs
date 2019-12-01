@@ -1684,7 +1684,238 @@ def new_cipher(cipher, is_slow_cipher=False):
     raise ValueError('Unsupported cipher: %s' % cipher)
 
 
-# --- GPG.
+# --- GPG misc: used for both encryption and decryption.
+
+
+CRC24_TABLE = (
+    0x000000, 0x864cfb, 0x8ad50d, 0x0c99f6, 0x93e6e1, 0x15aa1a, 0x1933ec,
+    0x9f7f17, 0xa18139, 0x27cdc2, 0x2b5434, 0xad18cf, 0x3267d8, 0xb42b23,
+    0xb8b2d5, 0x3efe2e, 0xc54e89, 0x430272, 0x4f9b84, 0xc9d77f, 0x56a868,
+    0xd0e493, 0xdc7d65, 0x5a319e, 0x64cfb0, 0xe2834b, 0xee1abd, 0x685646,
+    0xf72951, 0x7165aa, 0x7dfc5c, 0xfbb0a7, 0x0cd1e9, 0x8a9d12, 0x8604e4,
+    0x00481f, 0x9f3708, 0x197bf3, 0x15e205, 0x93aefe, 0xad50d0, 0x2b1c2b,
+    0x2785dd, 0xa1c926, 0x3eb631, 0xb8faca, 0xb4633c, 0x322fc7, 0xc99f60,
+    0x4fd39b, 0x434a6d, 0xc50696, 0x5a7981, 0xdc357a, 0xd0ac8c, 0x56e077,
+    0x681e59, 0xee52a2, 0xe2cb54, 0x6487af, 0xfbf8b8, 0x7db443, 0x712db5,
+    0xf7614e, 0x19a3d2, 0x9fef29, 0x9376df, 0x153a24, 0x8a4533, 0x0c09c8,
+    0x00903e, 0x86dcc5, 0xb822eb, 0x3e6e10, 0x32f7e6, 0xb4bb1d, 0x2bc40a,
+    0xad88f1, 0xa11107, 0x275dfc, 0xdced5b, 0x5aa1a0, 0x563856, 0xd074ad,
+    0x4f0bba, 0xc94741, 0xc5deb7, 0x43924c, 0x7d6c62, 0xfb2099, 0xf7b96f,
+    0x71f594, 0xee8a83, 0x68c678, 0x645f8e, 0xe21375, 0x15723b, 0x933ec0,
+    0x9fa736, 0x19ebcd, 0x8694da, 0x00d821, 0x0c41d7, 0x8a0d2c, 0xb4f302,
+    0x32bff9, 0x3e260f, 0xb86af4, 0x2715e3, 0xa15918, 0xadc0ee, 0x2b8c15,
+    0xd03cb2, 0x567049, 0x5ae9bf, 0xdca544, 0x43da53, 0xc596a8, 0xc90f5e,
+    0x4f43a5, 0x71bd8b, 0xf7f170, 0xfb6886, 0x7d247d, 0xe25b6a, 0x641791,
+    0x688e67, 0xeec29c, 0x3347a4, 0xb50b5f, 0xb992a9, 0x3fde52, 0xa0a145,
+    0x26edbe, 0x2a7448, 0xac38b3, 0x92c69d, 0x148a66, 0x181390, 0x9e5f6b,
+    0x01207c, 0x876c87, 0x8bf571, 0x0db98a, 0xf6092d, 0x7045d6, 0x7cdc20,
+    0xfa90db, 0x65efcc, 0xe3a337, 0xef3ac1, 0x69763a, 0x578814, 0xd1c4ef,
+    0xdd5d19, 0x5b11e2, 0xc46ef5, 0x42220e, 0x4ebbf8, 0xc8f703, 0x3f964d,
+    0xb9dab6, 0xb54340, 0x330fbb, 0xac70ac, 0x2a3c57, 0x26a5a1, 0xa0e95a,
+    0x9e1774, 0x185b8f, 0x14c279, 0x928e82, 0x0df195, 0x8bbd6e, 0x872498,
+    0x016863, 0xfad8c4, 0x7c943f, 0x700dc9, 0xf64132, 0x693e25, 0xef72de,
+    0xe3eb28, 0x65a7d3, 0x5b59fd, 0xdd1506, 0xd18cf0, 0x57c00b, 0xc8bf1c,
+    0x4ef3e7, 0x426a11, 0xc426ea, 0x2ae476, 0xaca88d, 0xa0317b, 0x267d80,
+    0xb90297, 0x3f4e6c, 0x33d79a, 0xb59b61, 0x8b654f, 0x0d29b4, 0x01b042,
+    0x87fcb9, 0x1883ae, 0x9ecf55, 0x9256a3, 0x141a58, 0xefaaff, 0x69e604,
+    0x657ff2, 0xe33309, 0x7c4c1e, 0xfa00e5, 0xf69913, 0x70d5e8, 0x4e2bc6,
+    0xc8673d, 0xc4fecb, 0x42b230, 0xddcd27, 0x5b81dc, 0x57182a, 0xd154d1,
+    0x26359f, 0xa07964, 0xace092, 0x2aac69, 0xb5d37e, 0x339f85, 0x3f0673,
+    0xb94a88, 0x87b4a6, 0x01f85d, 0x0d61ab, 0x8b2d50, 0x145247, 0x921ebc,
+    0x9e874a, 0x18cbb1, 0xe37b16, 0x6537ed, 0x69ae1b, 0xefe2e0, 0x709df7,
+    0xf6d10c, 0xfa48fa, 0x7c0401, 0x42fa2f, 0xc4b6d4, 0xc82f22, 0x4e63d9,
+    0xd11cce, 0x575035, 0x5bc9c3, 0xdd8538,
+)
+
+
+def crc24(data, crc=0xb704ce):
+  if not isinstance(data, (str, buffer)):
+    raise TypeError
+  table = CRC24_TABLE
+  for c in data:
+    crc = (table[((crc >> 16) ^ ord(c)) & 0xff] ^ (crc << 8)) & 0x00ffffff
+  return crc
+
+
+def str_to_fread(data):
+  if not isinstance(data, (str, buffer)):
+    raise TypeError
+  i_ary = [0]
+
+  def fread(size):
+    i = i_ary[0]
+    result = data[i : i + size]
+    i_ary[0] = i + len(result)
+    return result
+
+  return fread
+
+
+# GPG defaults: https://en.wikipedia.org/wiki/GNU_Privacy_Guard says that
+# CAST5 has been the default in GPG <2.1 (confirmed for 1.0.6 in
+# 2001-06-01). In 2.1, AES-128 became the default. In 2.2, AES-256 became
+# the default (confirmed for 2.2.17 in 2019-07-09).
+CIPHER_ALGOS = {  # --cipher-algo=... .
+    #0: 'unencrypted',  # gpg(1) can't decrypt it either.
+    1: 'idea',
+    2: '3des',  # With 192-bit key.
+    3: 'cast5',  # With 128-bit key.
+    4: 'blowfish',  # With 128-bit key, 16 rounds.
+    7: 'aes-128',
+    8: 'aes-192',
+    9: 'aes-256',
+    10: 'twofish-256',
+    302: 'des',  # Single-key, 56-bit (64-bit?) DES.
+    303: 'twofish-128',
+}
+
+
+# https://github.com/gpg/libgcrypt/blob/e5c4cf0efb8fd297963e6b4392ab98c41dbad536/src/gcrypt.h.in#L919
+CIPHER_ALGOS_ALL = {
+    0: 'unencrypted',  # gpg(1) can't decrypt it either.
+    1: 'idea',
+    2: '3des',  # With 192-bit key.
+    3: 'cast5',  # With 128-bit key.
+    4: 'blowfish',  # With 128-bit key, 16 rounds.
+    5: 'safer-sk128',
+    6: 'des-sk',
+    7: 'aes-128',
+    8: 'aes-192',
+    9: 'aes-256',
+    10: 'twofish-256',
+    301: 'rc4',  # 'arcfour'.
+    302: 'des',  # Single-key, 56-bit (64-bit?) DES.
+    303: 'twofish-128',
+    304: 'serpent-128',
+    305: 'serpent-192',
+    306: 'serpent-256',
+    307: 'rfc2268-ron-40',
+    308: 'rfc2268-ron-128',
+    309: 'rfc4269-seed',
+    310: 'camellia-128',
+    311: 'camellia-192',
+    312: 'camellia-256',
+    313: 'salsa20',
+    314: 'salsa20-r12',
+    315: 'rfc-5830-gost',  # GOST 28147-89.
+    316: 'chacha20',
+}
+
+KEYTABLE_SIZES = {
+    1: 16,
+    2: 24,
+    3: 16,
+    4: 16,
+    7: 16,
+    8: 24,
+    9: 32,
+    10: 32,
+    303: 16,
+}
+
+DIGEST_ALGOS = {  # --digest-algo=..., --s2k-digest-algo=... .
+    1: 'md5',
+    2: 'sha1',
+    3: 'ripemd160',
+    8: 'sha256',
+    9: 'sha384',
+    10: 'sha512',
+    11: 'sha224',
+}
+
+S2K_MODES = {
+    0: 'simple',
+    1: 'salted',
+    3: 'iterated-salted',
+}
+
+COMPRESS_ALGOS = {
+    0: 'uncompressed',
+    1: 'zip',
+    2: 'zlib',
+    3: 'bzip2',
+}
+
+
+def iter_to_fread(iter_str):
+  data_ary, iter_str = [buffer('')], iter(iter_str)
+
+  def fread(size):
+    data = data_ary[0]
+    if isinstance(size, tuple):  # ``Give me whatever you have buffered''.
+      min_size, mod = size
+      ld = len(data)
+      ldm = ld - ld % mod
+      if ldm < min_size:
+        return ''
+      result, data_ary[0] = buffer(data, 0, ldm), buffer(data, ldm)
+      return result
+    if size <= 0:
+      return ''
+    result, data = data[:size], buffer(data, size)
+    if len(result) < size:
+      remaining = size - len(result)
+      result = [result]
+      while remaining > 0:
+        try:
+          data = buffer(iter_str.next())
+        except StopIteration:
+          break
+        # This may be a long copy, but there is no way around it.
+        result.append(data[:remaining])
+        data = buffer(data, len(result[-1]))
+        remaining -= len(result[-1])
+      result = ''.join(result)
+    data_ary[0] = data
+    return result
+
+  return fread
+
+
+def get_gpg_cipher(cipher_algo, keytable, is_slow_cipher):
+  """Returns (codebook, block_size)."""
+  if cipher_algo not in CIPHER_ALGOS:
+    raise ValueError('Unsupported cipher_algo: %d' % cipher_algo)
+  if KEYTABLE_SIZES[cipher_algo] != len(keytable):
+    raise ValueError('Session key must be %d bytes for cipher_algo %s, got: %d' %
+                     (KEYTABLE_SIZES[cipher_algo], CIPHER_ALGOS[cipher_algo], len(keytable)))
+  # TODO(pts): Use MODE_CFB and MODE_OPENPGP for speed in Crypto.Cipher.
+  #
+  # The ciphers below (CAST5 and AES) cover the GPG defaults between 1.0.6
+  # (2001-06-01) and 2.2.17 (2019-07-09); https://en.wikipedia.org/wiki/GNU_Privacy_Guard says that CAST5 has been the default
+  # cipher since the beginning (GPGP 0.9.x, 1999) until <2.1.
+  cipher_cons, block_size = new_cipher(CIPHER_ALGOS[cipher_algo], is_slow_cipher)
+  return cipher_cons(keytable), block_size
+
+
+def get_gpg_s2k_string_to_key(keytable_size, salt, count, digest_func, passphrase):  # Slow.
+  # Calculate session key.
+  # https://github.com/mitchellrj/python-pgp/blob/master/pgp/s2k.py
+  session_key = []
+  session_key_remaining = keytable_size
+  sp = salt + passphrase
+  del passphrase
+  if count <= len(sp):
+    count = len(sp)
+  while session_key_remaining > 0:
+    d, c = digest_func('\0' * len(session_key)), count
+    if c >> 16:  # <FAST-HASH>: run little Python code only.
+      cx = (1 << 16) // len(sp)
+      spx = sp * cx  # At most 64 KiB of memory use.
+      while c >= len(spx):
+        d.update(spx)
+        c -= len(spx)
+      assert not c >> 16
+    d.update(sp * (c // len(sp)))  # At most 64 KiB.
+    d.update(sp[:c % len(sp)])
+    session_key.append(d.digest())
+    session_key_remaining -= len(session_key[-1])
+  session_key = ''.join(session_key)[:keytable_size]
+  assert len(session_key) == keytable_size
+  return session_key
+
+
+# --- GPG decryption.
 
 
 def yield_gpg_binary_packets(fread, c0=''):
@@ -1785,70 +2016,6 @@ def yield_gpg_binary_packets(fread, c0=''):
       yield packet_type, is_partial, data
 
 
-CRC24_TABLE = (
-    0x000000, 0x864cfb, 0x8ad50d, 0x0c99f6, 0x93e6e1, 0x15aa1a, 0x1933ec,
-    0x9f7f17, 0xa18139, 0x27cdc2, 0x2b5434, 0xad18cf, 0x3267d8, 0xb42b23,
-    0xb8b2d5, 0x3efe2e, 0xc54e89, 0x430272, 0x4f9b84, 0xc9d77f, 0x56a868,
-    0xd0e493, 0xdc7d65, 0x5a319e, 0x64cfb0, 0xe2834b, 0xee1abd, 0x685646,
-    0xf72951, 0x7165aa, 0x7dfc5c, 0xfbb0a7, 0x0cd1e9, 0x8a9d12, 0x8604e4,
-    0x00481f, 0x9f3708, 0x197bf3, 0x15e205, 0x93aefe, 0xad50d0, 0x2b1c2b,
-    0x2785dd, 0xa1c926, 0x3eb631, 0xb8faca, 0xb4633c, 0x322fc7, 0xc99f60,
-    0x4fd39b, 0x434a6d, 0xc50696, 0x5a7981, 0xdc357a, 0xd0ac8c, 0x56e077,
-    0x681e59, 0xee52a2, 0xe2cb54, 0x6487af, 0xfbf8b8, 0x7db443, 0x712db5,
-    0xf7614e, 0x19a3d2, 0x9fef29, 0x9376df, 0x153a24, 0x8a4533, 0x0c09c8,
-    0x00903e, 0x86dcc5, 0xb822eb, 0x3e6e10, 0x32f7e6, 0xb4bb1d, 0x2bc40a,
-    0xad88f1, 0xa11107, 0x275dfc, 0xdced5b, 0x5aa1a0, 0x563856, 0xd074ad,
-    0x4f0bba, 0xc94741, 0xc5deb7, 0x43924c, 0x7d6c62, 0xfb2099, 0xf7b96f,
-    0x71f594, 0xee8a83, 0x68c678, 0x645f8e, 0xe21375, 0x15723b, 0x933ec0,
-    0x9fa736, 0x19ebcd, 0x8694da, 0x00d821, 0x0c41d7, 0x8a0d2c, 0xb4f302,
-    0x32bff9, 0x3e260f, 0xb86af4, 0x2715e3, 0xa15918, 0xadc0ee, 0x2b8c15,
-    0xd03cb2, 0x567049, 0x5ae9bf, 0xdca544, 0x43da53, 0xc596a8, 0xc90f5e,
-    0x4f43a5, 0x71bd8b, 0xf7f170, 0xfb6886, 0x7d247d, 0xe25b6a, 0x641791,
-    0x688e67, 0xeec29c, 0x3347a4, 0xb50b5f, 0xb992a9, 0x3fde52, 0xa0a145,
-    0x26edbe, 0x2a7448, 0xac38b3, 0x92c69d, 0x148a66, 0x181390, 0x9e5f6b,
-    0x01207c, 0x876c87, 0x8bf571, 0x0db98a, 0xf6092d, 0x7045d6, 0x7cdc20,
-    0xfa90db, 0x65efcc, 0xe3a337, 0xef3ac1, 0x69763a, 0x578814, 0xd1c4ef,
-    0xdd5d19, 0x5b11e2, 0xc46ef5, 0x42220e, 0x4ebbf8, 0xc8f703, 0x3f964d,
-    0xb9dab6, 0xb54340, 0x330fbb, 0xac70ac, 0x2a3c57, 0x26a5a1, 0xa0e95a,
-    0x9e1774, 0x185b8f, 0x14c279, 0x928e82, 0x0df195, 0x8bbd6e, 0x872498,
-    0x016863, 0xfad8c4, 0x7c943f, 0x700dc9, 0xf64132, 0x693e25, 0xef72de,
-    0xe3eb28, 0x65a7d3, 0x5b59fd, 0xdd1506, 0xd18cf0, 0x57c00b, 0xc8bf1c,
-    0x4ef3e7, 0x426a11, 0xc426ea, 0x2ae476, 0xaca88d, 0xa0317b, 0x267d80,
-    0xb90297, 0x3f4e6c, 0x33d79a, 0xb59b61, 0x8b654f, 0x0d29b4, 0x01b042,
-    0x87fcb9, 0x1883ae, 0x9ecf55, 0x9256a3, 0x141a58, 0xefaaff, 0x69e604,
-    0x657ff2, 0xe33309, 0x7c4c1e, 0xfa00e5, 0xf69913, 0x70d5e8, 0x4e2bc6,
-    0xc8673d, 0xc4fecb, 0x42b230, 0xddcd27, 0x5b81dc, 0x57182a, 0xd154d1,
-    0x26359f, 0xa07964, 0xace092, 0x2aac69, 0xb5d37e, 0x339f85, 0x3f0673,
-    0xb94a88, 0x87b4a6, 0x01f85d, 0x0d61ab, 0x8b2d50, 0x145247, 0x921ebc,
-    0x9e874a, 0x18cbb1, 0xe37b16, 0x6537ed, 0x69ae1b, 0xefe2e0, 0x709df7,
-    0xf6d10c, 0xfa48fa, 0x7c0401, 0x42fa2f, 0xc4b6d4, 0xc82f22, 0x4e63d9,
-    0xd11cce, 0x575035, 0x5bc9c3, 0xdd8538,
-)
-
-
-def crc24(data, crc=0xb704ce):
-  if not isinstance(data, (str, buffer)):
-    raise TypeError
-  table = CRC24_TABLE
-  for c in data:
-    crc = (table[((crc >> 16) ^ ord(c)) & 0xff] ^ (crc << 8)) & 0x00ffffff
-  return crc
-
-
-def str_to_fread(data):
-  if not isinstance(data, (str, buffer)):
-    raise TypeError
-  i_ary = [0]
-
-  def fread(size):
-    i = i_ary[0]
-    result = data[i : i + size]
-    i_ary[0] = i + len(result)
-    return result
-
-  return fread
-
-
 def get_gpg_ascii_armor_fread(fread):
   import binascii  # For base64.
 
@@ -1943,170 +2110,6 @@ def yield_gpg_packets(fread):
     yield packet
 
 
-# GPG defaults: https://en.wikipedia.org/wiki/GNU_Privacy_Guard says that
-# CAST5 has been the default in GPG <2.1 (confirmed for 1.0.6 in
-# 2001-06-01). In 2.1, AES-128 became the default. In 2.2, AES-256 became
-# the default (confirmed for 2.2.17 in 2019-07-09).
-CIPHER_ALGOS = {
-    #0: 'unencrypted',  # gpg(1) can't decrypt it either.
-    1: 'idea',
-    2: '3des',  # With 192-bit key.
-    3: 'cast5',  # With 128-bit key.
-    4: 'blowfish',  # With 128-bit key, 16 rounds.
-    7: 'aes-128',
-    8: 'aes-192',
-    9: 'aes-256',
-    10: 'twofish-256',
-    302: 'des',  # Single-key, 56-bit (64-bit?) DES.
-    303: 'twofish-128',
-}
-
-
-# https://github.com/gpg/libgcrypt/blob/e5c4cf0efb8fd297963e6b4392ab98c41dbad536/src/gcrypt.h.in#L919
-CIPHER_ALGOS_ALL = {
-    0: 'unencrypted',  # gpg(1) can't decrypt it either.
-    1: 'idea',
-    2: '3des',  # With 192-bit key.
-    3: 'cast5',  # With 128-bit key.
-    4: 'blowfish',  # With 128-bit key, 16 rounds.
-    5: 'safer-sk128',
-    6: 'des-sk',
-    7: 'aes-128',
-    8: 'aes-192',
-    9: 'aes-256',
-    10: 'twofish-256',
-    301: 'rc4',  # 'arcfour'.
-    302: 'des',  # Single-key, 56-bit (64-bit?) DES.
-    303: 'twofish-128',
-    304: 'serpent-128',
-    305: 'serpent-192',
-    306: 'serpent-256',
-    307: 'rfc2268-ron-40',
-    308: 'rfc2268-ron-128',
-    309: 'rfc4269-seed',
-    310: 'camellia-128',
-    311: 'camellia-192',
-    312: 'camellia-256',
-    313: 'salsa20',
-    314: 'salsa20-r12',
-    315: 'rfc-5830-gost',  # GOST 28147-89.
-    316: 'chacha20',
-}
-
-KEYTABLE_SIZES = {
-    1: 16,
-    2: 24,
-    3: 16,
-    4: 16,
-    7: 16,
-    8: 24,
-    9: 32,
-    10: 32,
-    303: 16,
-}
-
-HASH_ALGOS = {
-    1: 'md5',
-    2: 'sha1',
-    3: 'ripemd160',
-    8: 'sha256',
-    9: 'sha384',
-    10: 'sha512',
-    11: 'sha224',
-}
-
-S2K_TYPES = {
-    0: 'simple',
-    1: 'salted',
-    3: 'iterated-salted',
-}
-
-COMPRESS_ALGOS = {
-    0: 'uncompressed',
-    1: 'zip',
-    2: 'zlib',
-    3: 'bzip2',
-}
-
-
-def iter_to_fread(iter_str):
-  data_ary, iter_str = [buffer('')], iter(iter_str)
-
-  def fread(size):
-    data = data_ary[0]
-    if isinstance(size, tuple):  # ``Give me whatever you have buffered''.
-      min_size, mod = size
-      ld = len(data)
-      ldm = ld - ld % mod
-      if ldm < min_size:
-        return ''
-      result, data_ary[0] = buffer(data, 0, ldm), buffer(data, ldm)
-      return result
-    if size <= 0:
-      return ''
-    result, data = data[:size], buffer(data, size)
-    if len(result) < size:
-      remaining = size - len(result)
-      result = [result]
-      while remaining > 0:
-        try:
-          data = buffer(iter_str.next())
-        except StopIteration:
-          break
-        # This may be a long copy, but there is no way around it.
-        result.append(data[:remaining])
-        data = buffer(data, len(result[-1]))
-        remaining -= len(result[-1])
-      result = ''.join(result)
-    data_ary[0] = data
-    return result
-
-  return fread
-
-
-def get_gpg_cipher(cipher_algo, keytable, is_slow_cipher):
-  """Returns (codebook, block_size)."""
-  if cipher_algo not in CIPHER_ALGOS:
-    raise ValueError('Unsupported cipher_algo: %d' % cipher_algo)
-  if KEYTABLE_SIZES[cipher_algo] != len(keytable):
-    raise ValueError('Session key must be %d bytes for cipher_algo %s, got: %d' %
-                     (KEYTABLE_SIZES[cipher_algo], CIPHER_ALGOS[cipher_algo], len(keytable)))
-  # TODO(pts): Use MODE_CFB and MODE_OPENPGP for speed in Crypto.Cipher.
-  #
-  # The ciphers below (CAST5 and AES) cover the GPG defaults between 1.0.6
-  # (2001-06-01) and 2.2.17 (2019-07-09); https://en.wikipedia.org/wiki/GNU_Privacy_Guard says that CAST5 has been the default
-  # cipher since the beginning (GPGP 0.9.x, 1999) until <2.1.
-  cipher_cons, block_size = new_cipher(CIPHER_ALGOS[cipher_algo], is_slow_cipher)
-  return cipher_cons(keytable), block_size
-
-
-def get_gpg_s2k_string_to_key(keytable_size, salt, count, digest_func, passphrase):  # Slow.
-  # Calculate session key.
-  # https://github.com/mitchellrj/python-pgp/blob/master/pgp/s2k.py
-  session_key = []
-  session_key_remaining = keytable_size
-  sp = salt + passphrase
-  del passphrase
-  if count <= len(sp):
-    count = len(sp)
-  while session_key_remaining > 0:
-    d, c = digest_func('\0' * len(session_key)), count
-    if c >> 16:  # <FAST-HASH>: run little Python code only.
-      cx = (1 << 16) // len(sp)
-      spx = sp * cx  # At most 64 KiB of memory use.
-      while c >= len(spx):
-        d.update(spx)
-        c -= len(spx)
-      assert not c >> 16
-    d.update(sp * (c // len(sp)))  # At most 64 KiB.
-    d.update(sp[:c % len(sp)])
-    session_key.append(d.digest())
-    session_key_remaining -= len(session_key[-1])
-  session_key = ''.join(session_key)[:keytable_size]
-  assert len(session_key) == keytable_size
-  return session_key
-
-
 def open_symmetric_gpg(f, passphrase, is_slow_cipher, is_slow_hash):
   # https://tools.ietf.org/html/rfc4880
   # TODO(pts): Support the ASCII armor as well.
@@ -2123,19 +2126,19 @@ def open_symmetric_gpg(f, passphrase, is_slow_cipher, is_slow_hash):
   if not 4 <= len(data) <= 46:
     raise ValueError('Bad GPG symmetric encrypted data (bad SKESK packet size).')
   assert not is_partial
-  version, cipher_algo, s2k_type, hash_algo = struct.unpack(
+  version, cipher_algo, s2k_mode, digest_algo = struct.unpack(
       '>BBBB', buffer(data, 0, 4))
   if version != 4:
     raise ValueError('SKESK version 4 expected, got %d' % version)
   i = 4
-  if s2k_type == 0:
+  if s2k_mode == 0:
     salt, count = '', 0
   else:
     salt = data[i : i + 8]
     if len(salt) < 8:
       raise ValueError('EOF in SKESK salt.')
     i += 8
-    if s2k_type == 3:
+    if s2k_mode == 3:
       if i >= len(data):
         raise ValueError('EOF in SKESK iterated-salted count.')
       b = ord(data[i])
@@ -2143,18 +2146,18 @@ def open_symmetric_gpg(f, passphrase, is_slow_cipher, is_slow_hash):
       count = (16 + (b & 15)) << ((b >> 4) + 6)
     else:
       count = 0
-  print >>sys.stderr, 'info: GPG symmetric cipher_algo=%s s2k_type=%s hash_algo=%s count=%d len(salt)=%d len(encrypted_session_key)=%d' % (
-      CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), S2K_TYPES.get(s2k_type, s2k_type), HASH_ALGOS.get(hash_algo, hash_algo), count, len(salt), len(data) - i)
-  #print >>sys.stderr, 'SKESK cipher_algo=%s s2k_type=%s hash_algo=%s count=%d salt=%r encrypted_session_key=%r' % (
-  #    CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), S2K_TYPES.get(s2k_type, s2k_type), HASH_ALGOS.get(hash_algo, hash_algo), count, salt, data[i:])
+  print >>sys.stderr, 'info: GPG symmetric cipher_algo=%s s2k_mode=%s digest_algo=%s count=%d len(salt)=%d len(encrypted_session_key)=%d' % (
+      CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), S2K_MODES.get(s2k_mode, s2k_mode), DIGEST_ALGOS.get(digest_algo, digest_algo), count, len(salt), len(data) - i)
+  #print >>sys.stderr, 'SKESK cipher_algo=%s s2k_mode=%s digest_algo=%s count=%d salt=%r encrypted_session_key=%r' % (
+  #    CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), S2K_MODES.get(s2k_mode, s2k_mode), DIGEST_ALGOS.get(digest_algo, digest_algo), count, salt, data[i:])
   if cipher_algo not in CIPHER_ALGOS:
     raise ValueError('Unknown SKESK cipher_algo: %d' % cipher_algo)
-  if s2k_type not in S2K_TYPES:
-    raise ValueError('Unknown SKESK s2k_type: %d' % s2k_type)
-  if hash_algo not in HASH_ALGOS:
-    raise ValueError('Unknown SKESK hash_algo: %d' % hash_algo)
-  digest_func = lambda data='': new_hash(HASH_ALGOS[hash_algo], data, is_slow_hash)
-  print >>sys.stderr, 'info: GPG symmetric is_py_hash=%d' % int(type(getattr(digest_func().update, 'im_func', None)) == type(lambda: 0))
+  if s2k_mode not in S2K_MODES:
+    raise ValueError('Unknown SKESK s2k_mode: %d' % s2k_mode)
+  if digest_algo not in DIGEST_ALGOS:
+    raise ValueError('Unknown SKESK digest_algo: %d' % digest_algo)
+  digest_func = lambda data='': new_hash(DIGEST_ALGOS[digest_algo], data, is_slow_hash)
+  print >>sys.stderr, 'info: GPG symmetric is_py_digest=%d' % int(type(getattr(digest_func().update, 'im_func', None)) == type(lambda: 0))
   keytable_size = KEYTABLE_SIZES[cipher_algo]
   for packet_type, is_partial, data2 in iter_packets:
     break
@@ -2184,7 +2187,7 @@ def open_symmetric_gpg(f, passphrase, is_slow_cipher, is_slow_hash):
   #print >>sys.stderr, 'SKESK session_key=%r' % (session_key.encode('hex').upper(),)
 
   if len(data) > i:  # Encrypted session key.
-    if s2k_type == 0:
+    if s2k_mode == 0:
       raise ValueError('Encrypted session key needs salt.')
     codebook, bs = get_gpg_cipher(cipher_algo, session_key, is_slow_cipher)
     strxor_bs = make_strxor(bs)  # For cipher_algo block size.
@@ -2252,8 +2255,8 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash):
   cipher_algo, session_key, has_mdc, fread = open_symmetric_gpg(
       fread, passphrase, is_slow_cipher, is_slow_hash)
   del passphrase
-  print >>sys.stderr, 'info: GPG symmetric session is_slow_cipher=%d has_mdc=%d cipher_algo=%s len(session_key)=%d' % (
-      int(is_slow_cipher), int(has_mdc), CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), len(session_key))
+  print >>sys.stderr, 'info: GPG symmetric session has_mdc=%d cipher_algo=%s len(session_key)=%d' % (
+      int(has_mdc), CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), len(session_key))
   #print (cipher_algo, session_key, has_mdc)
   strxor_2 = make_strxor(2)
   codebook, bs = get_gpg_cipher(cipher_algo, session_key, is_slow_cipher)
@@ -2352,7 +2355,7 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash):
       else:
         yield data1
     _fast_strxor = fast_strxor
-    if _fast_strxor and type(encrypt_func) is type(lambda: 0):  # Not fast, C extension.
+    if _fast_strxor and type(encrypt_func) is type(lambda: 0):  # Not fast C extension.
       _fast_strxor = None
     if len(data) == bs:
       bs2bs = (bs * (2 + mdc_min_queue_size), bs)
@@ -2444,6 +2447,7 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash):
       mdc_obj.update(mdc_queue)
       mdc_obj.update('\xd3\x14')
       if _buffer(mdc_obj.digest()) != mdc:
+        # !! Yield as much data as possible first, flush the output.
         raise ValueError('MDC mismatch, message may have been tampered with.')
     if mdc_queue:
       if zdml:
@@ -2480,36 +2484,302 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash):
     raise ValueError('Missing last literal packet.')
 
 
+# --- GPG encryption.
+
+
+def get_random_bytes_python(size):
+  import random
+  return ''.join(chr(random.randrange(0, 255)) for _ in xrange(size))
+
+
+def get_random_bytes_default(size, _functions=[]):
+  if size == 0:
+    return ''
+  if not _functions:
+    import os
+    try:
+      data = os.urandom(1)  # More secure than get_random_bytes_python.
+      if len(data) != 1:
+        raise ValueError
+      _functions.append(os.urandom)
+    except (ImportError, AttributeError, TypeError, ValueError, OSError):
+      _functions.append(get_random_bytes_python)
+
+  return _functions[0](size)
+
+
+def get_short_gpg_packet(packet_type, data):
+  if len(data) > 191:
+    raise ValueError('Short GPG packet must be at most 191 bytes, got: %d' % len(data))
+  if not 1 <= packet_type <= 63:
+    raise ValueError('Invalid GPG packet type: %d' % packet_type)
+  return struct.pack('>BB', 192 | packet_type, len(data)) + data
+
+
+def yield_partial_gpg_packet_chunks(packet_type, data, fread, _pack=struct.pack):
+  if not 1 <= packet_type <= 63:
+    raise ValueError('Invalid GPG partial packet type: %d' % packet_type)
+  log2_bufsize = 13  # !! Make it configurable.
+  if log2_bufsize > 30:  # The GPG file format doesn't support more.
+    raise ValueError('log2_bufsize must be at most 30, got: %d' % log2_bufsize)
+  bufsize = 1 << log2_bufsize
+  if len(data) > bufsize:
+    raise ValueError('Initial partial data too long.')
+  data += fread(bufsize - len(data))
+  if len(data) < bufsize:
+    if len(data) < 192:
+      yield _pack('>BB', 192 | packet_type, len(data))
+    elif len(data) < 8192 + 192:
+      b = len(data) - 192
+      yield _pack('>BBB', 192 | packet_type, 192 | b >> 8, b & 255)
+    elif packet_type < 16:
+      yield _pack('>BL', 130 | (packet_type << 2), len(data))
+    else:
+      yield _pack('>BBL', 192 | packet_type, 255, len(data))
+    yield data
+  else:
+    cont_size_spec = _pack('>B', 224 | log2_bufsize)
+    yield _pack('>Bc', 192 | packet_type, cont_size_spec)
+    while 1:
+      yield data
+      data = fread(bufsize)
+      if len(data) < bufsize:
+        break
+      yield cont_size_spec
+    if len(data) < 192:
+      yield _pack('>B', len(data))
+    elif len(data) < 8192 + 192:
+      b = len(data) - 192
+      yield _pack('>BB', 192 | b >> 8, b & 255)
+    else:
+      yield _pack('>BL', 255, len(data))
+    yield data
+
+
+def encrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash, cipher, hash, compress, compress_level, s2k_mode, s2k_count, salt, do_mdc, do_ascii_armor):
+  _pack = struct.pack
+  do_mdc = bool(do_mdc)
+  if do_ascii_armor:
+    raise ValueError('ASCII armor not implemented.')  # !! Implement it.
+  cipher = cipher.lower()
+  for cipher_algo, cipher2 in sorted(CIPHER_ALGOS.iteritems()):
+    if cipher2 == cipher:
+      break
+  else:
+    raise ValueError('Unknown GPG cipher: %s' % cipher)
+  hash = hash.replace('-', '').lower()
+  for digest_algo, hash2 in sorted(DIGEST_ALGOS.iteritems()):
+    if hash2 == hash:
+      break
+  else:
+    raise ValueError('Unknown GPG digest (for s2k): %s' % hash)
+  compress = compress.lower()
+  for compress_algo, compress2 in sorted(COMPRESS_ALGOS.iteritems()):
+    if compress2 == compress:
+      break
+  else:
+    raise ValueError('Unknown GPG compressor: %s' % compress)
+  if s2k_mode == 0:
+    salt, count = '', 0
+  elif s2k_mode in (1, 3):
+    if not salt:
+      salt = get_random_bytes_default(8)
+    if len(salt) != 8:
+      raise ValueError('GPG symmetric salt must be %d bytes, got: %d' % len(salt))
+    if s2k_mode == 3:
+      count = s2k_count
+    else:
+      count = 0
+  else:
+    raise ValueError('Invalid s2k mode: %r' % (s2k_mode,))
+  if count < 0:
+    raise ValueError('s2k count must be nonnegative, got: %d' % count)
+  if compress_algo == 0:
+    ze = None
+  elif compress_algo == 1:
+    import zlib  # ImportError: no flate decompressor in Python.
+    ze = zlib.compressobj(compress_level, 8, -13)
+  elif compress_algo == 2:
+    import zlib  # ImportError: no flate decompressor in Python.
+    ze = zlib.compressobj(compress_level)
+  elif compress_algo == 3:
+    import bz2  # ImportError: no bzip2 decompressor in Python.
+    ze = bz2.BZ2Compressor(compress_level)
+  else:
+    raise ValueError('Unknown compress_algo: %d' % compress_algo)
+  digest_func = lambda data='': new_hash(hash, data, is_slow_hash)
+  keytable_size = KEYTABLE_SIZES[cipher_algo]
+  codebook0, bs = get_gpg_cipher(cipher_algo, '\0' * keytable_size, is_slow_cipher)
+  plaintext_salt = get_random_bytes_default(bs)
+  # !! Print compress_algo and compress_level below.
+  print >>sys.stderr, 'info: GPG symmetric encrypt cipher_algo=%s is_py_cipher=%d s2k_mode=%s digest_algo=%s is_py_digest=%d count=%d len(salt)=%d len(encrypted_session_key)=0 do_mdc=%d len(session_key)=%d' % (
+      CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), int(type(getattr(codebook0.encrypt, 'im_func', None)) == type(lambda: 0)),
+      S2K_MODES.get(s2k_mode, s2k_mode),
+      DIGEST_ALGOS.get(digest_algo, digest_algo), int(type(getattr(digest_func().update, 'im_func', None)) == type(lambda: 0)),
+      count, len(salt), int(do_mdc), keytable_size)
+  if callable(passphrase):
+    passphrase = passphrase()  # !! Configure to ask it twice.
+  session_key = get_gpg_s2k_string_to_key(keytable_size, salt, count, digest_func, passphrase)  # Slow.
+  codebook, bs = get_gpg_cipher(cipher_algo, session_key, is_slow_cipher)
+  encrypt_func = codebook.encrypt
+  data = _pack('>BBBB', 4, cipher_algo, s2k_mode, digest_algo) + salt
+  if s2k_mode == 3:
+    b = 0x60
+    count2 = (16 + (b & 15)) << ((b >> 4) + 6)
+    assert count == count2  # Find nearest.
+    data += _pack('>B', b)
+  if len(data) > 191:
+    raise ValueError('SKESK packet too long.')
+  of.write(struct.pack('>BB', 192 | 3, len(data)))
+  of.write(data)
+
+  def yield_plaintext_chunks():
+    if do_mdc:
+      chunk = plaintext_salt + plaintext_salt[-2:]
+      mdc_obj = new_hash('sha1', chunk, is_slow_hash)
+      mdc_update = mdc_obj.update
+      yield chunk
+    else:
+      mdc_obj = mdc_update = None
+    if compress_algo:  # packet_type == 8.
+      chunk = _pack('>BB', 0xa3, compress_algo)
+      if mdc_obj:
+        mdc_update(chunk)
+      yield chunk
+    literal_type, filename_size, mtime = 'b', 0, 0
+    data = struct.pack('>cBL', literal_type, filename_size, mtime)
+    ufread = iter_to_fread(yield_partial_gpg_packet_chunks(11, data, fread))
+    while 1:
+      data = ufread(8192)  # !! Is larger faster? Make it configurable.
+      if not data:
+        break
+      if ze:
+        data = ze.compress(data)
+      if mdc_obj:
+        mdc_update(data)
+      yield data
+    if ze:
+      data = ze.flush()
+      if mdc_obj:
+        mdc_update(data)
+      yield data
+    if mdc_obj:
+      mdc_update('\xd3\x14')
+      yield '\xd3\x14' + mdc_obj.digest()
+
+  def yield_ciphertext_chunks():
+    fre = encrypt_func('\0' * bs)
+    strxor_bs = make_strxor(bs)
+    if not do_mdc:
+      data = strxor_bs(plaintext_salt, fre)
+      yield data
+      fre = encrypt_func(data)
+      got2 = make_strxor(2)(fre[:2], plaintext_salt[-2:])
+      yield got2
+      fre = encrypt_func(data[2:] + got2)  # Short copy.
+    pfread = iter_to_fread(yield_plaintext_chunks())
+    _fast_strxor = fast_strxor
+    if _fast_strxor and type(encrypt_func) is type(lambda: 0):  # Not fast C extension.
+      _fast_strxor = None
+    pfread_size = 8192  # !! Make it configurable.
+    if _fast_strxor and pfread_size >= (bs << 1):
+      pfread_size -= pfread_size % bs
+      buf = []
+      while 1:
+        data = pfread(pfread_size)
+        if not data:
+          break
+        lda = len(data)
+        ldbs = lda - lda % bs
+        data, datax = data[:ldbs], data[ldbs:]
+        # Unfortunately we can't process data with a single big call to
+        # _fast_strxor, because we need to call encrypt_func many times, in
+        # a feedback.
+        #
+        # This is <FAST-ENCRYPTION> below.
+        del buf[:]
+        for i in xrange(0, ldbs, bs):
+          buf.append(strxor_bs(data[i : i + bs], fre))
+          fre = encrypt_func(buf[-1])
+        yield ''.join(buf)
+        # This comment below is <BAD_FAST-ENCRYPTION>.
+        # data = _fast_strxor(data, fre + data[:-bs])
+        # yield data
+        # fre = encrypt_func(data[-bs:])
+        if datax:
+          data = datax
+          break
+    else:
+      while 1:
+        data = pfread(bs)
+        if len(data) < bs:
+          break
+        data = strxor_bs(data, fre)  # CFB mode.
+        yield data
+        fre = encrypt_func(data)
+    yield strxor_bs(data + '\0' * (bs - len(data)), fre)[:len(data)]
+
+  packet_type, data = ((9, ''), (18, '\1'))[do_mdc]
+  for chunk in yield_partial_gpg_packet_chunks(
+      packet_type, data, iter_to_fread(yield_ciphertext_chunks())):
+    of.write(chunk)
+
+
+# --- Command-line parsing and main().
+
+
 def main(argv):
   argv = list(argv)
   is_slow_cipher = is_slow_hash = False
-  if len(argv) > 3 and argv[1] == '-d' and argv[2] == '--pinentry-mode' and argv[3] == 'loopback':
+  passphrase = lambda: prompt_passphrase(False)
+  if len(argv) > 1 and argv[1] == '--decrypt':
+    argv[1] = '-d'
+  elif len(argv) > 1 and argv[1] == '--symmetric':
+    argv[1] = '-c'
+  if len(argv) > 3 and argv[1] in ('-c', '-d') and argv[2] == '--pinentry-mode' and argv[3] == 'loopback':
     del argv[2 : 4]
-  if len(argv) > 2 and argv[1] == '-d' and argv[2] == '--slow-cipher':  # Not gpg(1).
+  if len(argv) > 2 and argv[1] in ('-c', '-d') and argv[2] == '--slow-cipher':  # Not gpg(1).
     is_slow_cipher = True
     del argv[2]
-  if len(argv) > 2 and argv[1] == '-d' and argv[2] == '--slow-hash':  # Not gpg(1).
+  if len(argv) > 2 and argv[1] in ('-c', '-d') and argv[2] == '--slow-hash':  # Not gpg(1).
     is_slow_hash = True
     del argv[2]
-  if len(argv) not in (2, 3) or argv[1] != '-d':
+  if len(argv) == 3 and argv[1] in ('-c', '-d'):
+    passphrase = argv.pop(2)
+  if not (len(argv) == 2 and argv[1] != ('-c', '-d')):
     sys.stderr.write(
         'tinygpgs: decrypt symmetric encrypted GPG files\n'
         'usage: %s -d <INPUT.BIN.GPG >INPUT.BIN\n' % argv[0])
     sys.exit(1)
-  if len(argv) > 2:
-    passphrase = argv[2]
-  else:
-    passphrase = lambda: prompt_passphrase(False)
   inf = sys.stdin
   set_fd_binary(inf.fileno())
   of = sys.stdout
   set_fd_binary(of.fileno())
-  try:
-    decrypt_symmetric_gpg(inf.read, of, passphrase, is_slow_cipher, is_slow_hash)
-  except BadPassphraseError, e:
-    msg = str(e)
-    sys.stderr.write('fatal: %s%s\n' % (msg[0].lower(), msg[1:].rstrip('.')))
-    sys.exit(2)
+  if argv[1] == '-c':
+    # Defaults in GPG <2.1, including 1.4.18.
+    # !! Add command-line flags.
+    # !! document encryptedfile and other Python modules.
+    #cipher = 'cast5'
+    cipher = 'aes-256'
+    hash = 'sha1'
+    compress = 'zip'
+    #compress = 'uncompressed'
+    compress_level = 6  # For benchmarks, same as default gpg --compress-level=6.
+    #compress_level = 9  # Maximum.
+    s2k_mode = 3
+    s2k_count = 65536
+    do_ascii_armor = False
+    salt = None
+    do_mdc = True
+    #do_mdc = False
+    encrypt_symmetric_gpg(inf.read, of, passphrase, is_slow_cipher, is_slow_hash, cipher, hash, compress, compress_level, s2k_mode, s2k_count, salt, do_mdc, do_ascii_armor)
+  elif argv[1] == '-d':
+    try:
+      decrypt_symmetric_gpg(inf.read, of, passphrase, is_slow_cipher, is_slow_hash)
+    except BadPassphraseError, e:
+      msg = str(e)
+      sys.stderr.write('fatal: %s%s\n' % (msg[0].lower(), msg[1:].rstrip('.')))
+      sys.exit(2)
 
 
 if __name__ == '__main__':
