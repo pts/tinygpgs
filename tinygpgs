@@ -2123,6 +2123,8 @@ def open_symmetric_gpg(f, passphrase, is_slow_cipher, is_slow_hash):
     raise ValueError('Expected symmetric data packet type, got: %d' % packet_type)
   del data2
 
+  if callable(passphrase):
+    passphrase = passphrase()
   # Calculate session key.
   # https://github.com/mitchellrj/python-pgp/blob/master/pgp/s2k.py
   session_key = []
@@ -2423,8 +2425,7 @@ def main(argv):
   if len(argv) > 2:
     passphrase = argv[2]
   else:
-    # !! TODO(pts): Ask late for passphrase, after input syntax check.
-    passphrase = prompt_passphrase(False)
+    passphrase = lambda: prompt_passphrase(False)
   # !! Shorter report BadPassphraseError.
   decrypt_symmetric_gpg(sys.stdin.read, sys.stdout, passphrase, is_slow_cipher, is_slow_hash)
 
