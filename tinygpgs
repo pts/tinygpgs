@@ -1646,8 +1646,14 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher):
       bs2bs = (bs * (2 + mdc_min_queue_size), bs)
       bsmdc = bs * mdc_min_queue_size
       while 1:
+        data2 = fread(bs)
+        if len(data2) < bs:
+          fre = encrypt_func(data)
+          data1 = strxor_bs(data2 + '\0' * (bs - len(data2)), fre)[:len(data2)]
+          break
         data3 = _fast_strxor and fread(bs2bs)
         if data3:  # Speedup for large chunk of prebuffered data.
+          lbs = bs + len(data3)
           # Most of the decryption time is spent in this block below.
           #
           # hellow5long.bin.gpg is based on 33636451 bytes of uncompressible plaintext.
@@ -1656,56 +1662,50 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher):
           # $ time ./tinygpgs -d abc <hellow5long.bin.gpg >hellow5long.out
           # 4.512s user
           #
-          # Typical len(data3) is 8144 bytes (for 8192-byte packets).
-          # For hellow3.bin.gpg, len(data3) is 384 bytes.
+          # Typical lbs is 8192 bytes (for 8192-byte packets).
+          # For hellow3.bin.gpg, lbs is 384 bytes.
+          #print >>sys.stderr, 'fast', lbs
           if mdc_obj and mdc_queue:  # Flush mdc_queue before critical path.
-            for data2 in mdc_queue:
-              mdc_obj.update(data2)
+            for data1 in mdc_queue:
+              mdc_obj.update(data1)
               if zd:
-                data2 = zd.decompress(data2)
-              yield data2
-          lbs = len(data3) - bs
+                data1 = zd.decompress(data1)
+              yield data1
           # Crypto.Cipher._AES.MODE_CFB and mode 5 don't work: they
           # produce different results even for long test vectors
           # https://github.com/ircmaxell/PHP-PasswordLib/blob/master/test/Data/Vectors/aes-cfb.test-vectors
           # , so we usse manual strxor instead.
           #
-          # The data[:] contains a slow copy, but strxor requires it. The
-          # `+' also does a slow copy.
-          data3d = _fast_strxor(encrypt_func(data[:] + data3[:-bs]), data3[:])
-          # TODO(pts): Avoid the slow copy in the `+' blow. Is it a speedup?
-          #data3d = _fast_strxor(encrypt_func(data), data3[:bs]) + strxor(encrypt_func(_buffer(data3, 0, lbs)), data3[bs:])
-          data1 = _buffer(data3d, 0, len(data3) - bsmdc)
+          # Slow copy in: data3[:], (data2 + data3), +=.
+          datad, data3, data = _fast_strxor(encrypt_func(data), data2), data3[:], data3[lbs - bs - bs:]
+          datad += _fast_strxor(encrypt_func(_buffer((data2 + data3), 0, lbs - bs)), data3)
+          data2 = _buffer(datad, 0, lbs - bsmdc)
           if mdc_obj:
-            mdc_obj.update(data1)
-          if zd:
-            data1 = zd.decompress(data1)
-          yield data1
-          if mdc_obj:  # Fill mdc_queue again.
-            mdc_queue[:] = (data3d[i : i + bs] for i in xrange(len(data3) - bsmdc, len(data3), bs))
-          data = _buffer(data3, lbs)  # For next fre in CFB mode.
-          continue
-        fre = encrypt_func(data)
-        data = fread(bs)
-        if len(data) < bs:
-          data1 = strxor_bs(data + '\0' * (bs - len(data)), fre)[:len(data)]
-          break
-        data1 = strxor_bs(data, fre)
-        if mdc_obj:
-          if len(mdc_queue) >= mdc_min_queue_size:
-            data2 = mdc_queue.pop(0)
             mdc_obj.update(data2)
-            if zd:
-              data2 = zd.decompress(data2)
-            yield data2
-          mdc_queue.append(data1)
-          # Now len(mdc_queue) >= min_queue_size, and it contains enough
-          # bytes (>= 22) for an MDC packet: mdc_min_queue_size * bs -
-          # len(exp2) - len('\xd3\x14') >= 22.
-        else:
           if zd:
-            data1 = zd.decompress(data1)
-          yield data1
+            data2 = zd.decompress(data2)
+          yield data2
+          if mdc_obj:  # Fill mdc_queue again.
+            mdc_queue[:] = (datad[i : i + bs] for i in xrange(lbs - bsmdc, lbs, bs))
+        else:  # This branch happens 0 times with current test input files.
+          #print >>sys.stderr, 'SLOW', bs
+          fre, data = encrypt_func(data), data2
+          data1 = strxor_bs(data, fre)
+          if mdc_obj:
+            if len(mdc_queue) >= mdc_min_queue_size:
+              data2 = mdc_queue.pop(0)
+              mdc_obj.update(data2)
+              if zd:
+                data2 = zd.decompress(data2)
+              yield data2
+            mdc_queue.append(data1)
+            # Now len(mdc_queue) >= min_queue_size, and it contains enough
+            # bytes (>= 22) for an MDC packet: mdc_min_queue_size * bs -
+            # len(exp2) - len('\xd3\x14') >= 22.
+          else:
+            if zd:
+              data1 = zd.decompress(data1)
+            yield data1
     # Now data1 is the last plaintext chunk to process.
     if mdc_obj:
       mdc_queue.append(data1)
