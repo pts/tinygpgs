@@ -2057,6 +2057,33 @@ def get_gpg_cipher(cipher_algo, keytable, is_slow_cipher):
   return cipher_cons(keytable), block_size
 
 
+def get_gpg_s2k_string_to_key(keytable_size, salt, count, digest_func, passphrase):  # Slow.
+  # Calculate session key.
+  # https://github.com/mitchellrj/python-pgp/blob/master/pgp/s2k.py
+  session_key = []
+  session_key_remaining = keytable_size
+  sp = salt + passphrase
+  del passphrase
+  if count <= len(sp):
+    count = len(sp)
+  while session_key_remaining > 0:
+    d, c = digest_func('\0' * len(session_key)), count
+    if c >> 16:  # <FAST-HASH>: run little Python code only.
+      cx = (1 << 16) // len(sp)
+      spx = sp * cx  # At most 64 KiB of memory use.
+      while c >= len(spx):
+        d.update(spx)
+        c -= len(spx)
+      assert not c >> 16
+    d.update(sp * (c // len(sp)))  # At most 64 KiB.
+    d.update(sp[:c % len(sp)])
+    session_key.append(d.digest())
+    session_key_remaining -= len(session_key[-1])
+  session_key = ''.join(session_key)[:keytable_size]
+  assert len(session_key) == keytable_size
+  return session_key
+
+
 def open_symmetric_gpg(f, passphrase, is_slow_cipher, is_slow_hash):
   # https://tools.ietf.org/html/rfc4880
   # TODO(pts): Support the ASCII armor as well.
@@ -2127,33 +2154,11 @@ def open_symmetric_gpg(f, passphrase, is_slow_cipher, is_slow_hash):
 
   if callable(passphrase):
     passphrase = passphrase()
-  # Calculate session key.
-  # https://github.com/mitchellrj/python-pgp/blob/master/pgp/s2k.py
-  session_key = []
-  session_key_remaining = keytable_size
-  sp = salt + passphrase
-  del passphrase
-  if count <= len(sp):
-    count = len(sp)
-  while session_key_remaining > 0:
-    d, c = digest_func('\0' * len(session_key)), count
-    if c >> 16:  # <FAST-HASH>: run little Python code only.
-      cx = (1 << 16) // len(sp)
-      spx = sp * cx  # At most 64 KiB of memory use.
-      while c >= len(spx):
-        d.update(spx)
-        c -= len(spx)
-      assert not c >> 16
-    d.update(sp * (c // len(sp)))  # At most 64 KiB.
-    d.update(sp[:c % len(sp)])
-    session_key.append(d.digest())
-    session_key_remaining -= len(session_key[-1])
-  session_key = ''.join(session_key)[:keytable_size]
-  assert len(session_key) == keytable_size
-  del keytable_size, salt, sp
+  session_key = get_gpg_s2k_string_to_key(keytable_size, salt, count, digest_func, passphrase)  # Slow.
+  del passphrase, keytable_size, salt, digest_func
   # Correct, same as:
   # gpg --list-packets -vvvvv --show-session-key --pinentry-mode loopback hellow4.bin.gpg
-  #print 'SKESK session_key=%r' % (session_key.encode('hex').upper(),)
+  #print >>sys.stderr, 'SKESK session_key=%r' % (session_key.encode('hex').upper(),)
 
   if len(data) > i:  # Encrypted session key.
     if s2k_type == 0:
