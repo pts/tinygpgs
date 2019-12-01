@@ -1,20 +1,37 @@
-#! /usr/bin/python
+#! /bin/sh
 # by pts@fazekas.hu at Thu Nov 28 22:09:47 CET 2019
-#
-# Simple Python 2.x tool to decrypt OpenPGP data encrypted with symmetric
-# key (output of `gpg -c' and `gpg --symmetric'), using crypto in PyCrypto,
-# only CAST5 and AES ciphers are supported.
-#
-# OpenPGP is defined in https://tools.ietf.org/html/rfc4880
-#
+
+""":" # tinygpgs: symmetric key encryption tool compatible with GPG
+
+type python2.7 >/dev/null 2>&1 && exec python2.7 -- "$0" ${1+"$@"}
+type python2.6 >/dev/null 2>&1 && exec python2.6 -- "$0" ${1+"$@"}
+type python2.5 >/dev/null 2>&1 && exec python2.5 -- "$0" ${1+"$@"}
+type python2.4 >/dev/null 2>&1 && exec python2.4 -- "$0" ${1+"$@"}
+exec python -- ${1+"$@"}; exit 1
+
+This script need Python 2.4, 2.5, 2.6 or 2.7. Python 3.x won't work.
+
+Typical usage: tinygpgs -d <FILE.bin.gpg >FILE.bin
+
+Simple Python 2.x tool to decrypt OpenPGP data encrypted with symmetric key
+(output of `gpg -c' and `gpg --symmetric'), using crypto in PyCrypto.
+
+Requires standard Python modules only, but becomes much faster (<1.26
+times slower than gpg(1)) if PyCrypto gets installed.
+
+All ciphers and hashes defined in the OpenPGP RFC
+(https://tools.ietf.org/html/rfc4880) are supported.
+"""
+
 # !! Add tests for ciphers and hashes.
 # !! Add encryption (-c) support.
 # !! Add Python 3 support.
-# !! Add shebang, help and docs.
+# !! Add help and docs.
 # !! Find ASCII armor later in the file, like how gpg(1) finds it.
 # !! Add gpg(1) compatibility flags: --passphrase-repeat n, --passphrase-fd n, --passphrase-file file, --passphrase string.
 # !! Add better command-line parsing.
-#
+# !! Add license.
+# !! Add warning if slow becaue of Python hash or cipher.
 
 import itertools
 import struct
