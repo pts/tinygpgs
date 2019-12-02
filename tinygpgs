@@ -2547,7 +2547,7 @@ def skip_gpg_literal_packet_header(data):
 
 
 def copy_gpg_literal_data(fread, of):
-  done_state = 0
+  done_state, fwrite = 0, of.write
   for packet_type, is_partial, data in yield_gpg_binary_packets(fread):
     if done_state == 2:
       if packet_type == 2 and not is_partial:
@@ -2560,7 +2560,7 @@ def copy_gpg_literal_data(fread, of):
       raise ValueError('Literal packet expected, got: %d' % packet_type)
     if done_state == 0:
       data = skip_gpg_literal_packet_header(data)
-    of.write(data)
+    fwrite(data)
     done_state = 1 + (not is_partial)
   if done_state == 1:
     raise ValueError('Missing last literal packet.')
@@ -2611,7 +2611,7 @@ class GpgSymmetricFileReader(object):
     import getpass
     f = GpgSymmetricFileReader('FILE.bin.gpg', 'rb', getpass.getpass())
     try:
-      print(f.read())
+      print(f.read())  # Use f.read(8192) to limit memory usage.
     finally:
       f.close()
 
@@ -2730,8 +2730,50 @@ def yield_partial_gpg_packet_chunks(packet_type, data, fread, _pack=struct.pack)
     yield data
 
 
-def encrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash, cipher, hash, compress, compress_level, s2k_mode, s2k_count, salt, do_mdc, do_ascii_armor):
-  _pack, _buffer = struct.pack, buffer
+def write_partial_gpg_packet_chunks(fwrite, packet_type, data, fread, _pack=struct.pack):
+  # Similar to yield_partial_gpg_packet_chunks, but calls fwrite instead of
+  # yield. Added for performance reasons.
+  if not 1 <= packet_type <= 63:
+    raise ValueError('Invalid GPG partial packet type: %d' % packet_type)
+  log2_bufsize = 13  # !! Make it configurable.
+  if log2_bufsize > 30:  # The GPG file format doesn't support more.
+    raise ValueError('log2_bufsize must be at most 30, got: %d' % log2_bufsize)
+  bufsize = 1 << log2_bufsize
+  if len(data) > bufsize:
+    raise ValueError('Initial partial data too long.')
+  data += fread(bufsize - len(data))
+  if len(data) < bufsize:
+    if len(data) < 192:
+      fwrite(_pack('>BB', 192 | packet_type, len(data)))
+    elif len(data) < 8192 + 192:
+      b = len(data) - 192
+      fwrite(_pack('>BBB', 192 | packet_type, 192 | b >> 8, b & 255))
+    elif packet_type < 16:
+      fwrite(_pack('>BL', 130 | (packet_type << 2), len(data)))
+    else:
+      fwrite(_pack('>BBL', 192 | packet_type, 255, len(data)))
+    fwrite(data)
+  else:
+    cont_size_spec = _pack('>B', 224 | log2_bufsize)
+    fwrite(_pack('>Bc', 192 | packet_type, cont_size_spec))
+    while 1:  # This is the critical path.
+      fwrite(data)
+      data = fread(bufsize)
+      if len(data) < bufsize:
+        break
+      fwrite(cont_size_spec)
+    if len(data) < 192:
+      fwrite(_pack('>B', len(data)))
+    elif len(data) < 8192 + 192:
+      b = len(data) - 192
+      fwrite(_pack('>BB', 192 | b >> 8, b & 255))
+    else:
+      fwrite(_pack('>BL', 255, len(data)))
+    fwrite(data)
+
+
+def get_encrypt_symmetric_gpg_params(passphrase, is_slow_cipher, is_slow_hash, cipher, hash, compress, compress_level, s2k_mode, s2k_count, salt, do_mdc, do_ascii_armor):
+  _pack = struct.pack
   do_mdc = bool(do_mdc)
   if do_ascii_armor:
     raise ValueError('ASCII armor not implemented.')  # !! Implement it.
@@ -2795,35 +2837,61 @@ def encrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash, c
     passphrase = passphrase()  # !! Configure to ask it twice.
   session_key = get_gpg_s2k_string_to_key(keytable_size, salt, count, digest_func, passphrase)  # Slow.
   codebook, bs = get_gpg_cipher(cipher_algo, session_key, is_slow_cipher)
+  try:
+    cfb_encrypt = get_gpg_cipher(cipher_algo, session_key, is_slow_cipher, '\0' * bs)[0].encrypt
+  except BadCfbCipher:
+    cfb_encrypt = None
   encrypt_func = codebook.encrypt
-  data = _pack('>BBBB', 4, cipher_algo, s2k_mode, digest_algo) + salt
+  header = _pack('>BBBB', 4, cipher_algo, s2k_mode, digest_algo) + salt
   if s2k_mode == 3:
     b = 0x60
     count2 = (16 + (b & 15)) << ((b >> 4) + 6)
     assert count == count2  # Find nearest.
-    data += _pack('>B', b)
-  if len(data) > 191:
+    header += _pack('>B', b)
+  if len(header) > 191:
     raise ValueError('SKESK packet too long.')
-  of.write(struct.pack('>BB', 192 | 3, len(data)))
-  of.write(data)
+  header = struct.pack('>BB', 192 | 3, len(header)) + header
+  if do_mdc:
+    first_plaintext_chunk = plaintext_salt + plaintext_salt[-2:]
+    mdc_obj = new_hash('sha1', first_plaintext_chunk, is_slow_hash)
+    mdc_update = mdc_obj.update
+  else:
+    mdc_obj = mdc_update = None
+    first_plaintext_chunk = ''
+  if ze:
+    chunk = _pack('>BB', 0xa3, compress_algo)  # packet_type == 8.
+    if mdc_obj:
+      mdc_update(chunk)
+    first_plaintext_chunk += chunk
+  fr = '\0' * bs
+  if mdc_obj:
+    packet_type, packet_header = 18, '\1'
+  else:
+    strxor_bs = make_strxor(bs)
+    data = strxor_bs(plaintext_salt, encrypt_func(fr))
+    fr = data
+    got2 = make_strxor(2)(encrypt_func(fr)[:2], plaintext_salt[-2:])
+    packet_type, packet_header = 9, fr + got2
+    fr = data[2:] + got2  # Short copy.
+    # Set the IV in cfb_encrypt to fr. '\2' * bs is arbitrary.
+    fr1 = cfb_encrypt(strxor_bs(encrypt_func(cfb_encrypt('\2' * bs)), fr))
+    assert fr1 == fr
+  # !! Make filename configurable.
+  literal_type, filename_size, mtime = 'b', 0, 0
+  literal_header = struct.pack('>cBL', literal_type, filename_size, mtime)
+  return header, encrypt_func, bs, cfb_encrypt, plaintext_salt, mdc_obj, mdc_update, first_plaintext_chunk, ze, packet_type, packet_header, fr, literal_header
+
+
+def encrypt_symmetric_gpg(fread, of, *args, **kwargs):
+  _buffer = buffer
+  header, encrypt_func, bs, cfb_encrypt, plaintext_salt, mdc_obj, mdc_update, first_plaintext_chunk, ze, packet_type, packet_header, fr, literal_header = get_encrypt_symmetric_gpg_params(
+      *args, **kwargs)
+  of.write(header)
+  del header
 
   def yield_plaintext_chunks():
-    if do_mdc:
-      chunk = plaintext_salt + plaintext_salt[-2:]
-      mdc_obj = new_hash('sha1', chunk, is_slow_hash)
-      mdc_update = mdc_obj.update
-      yield chunk
-    else:
-      mdc_obj = mdc_update = None
-    if compress_algo:  # packet_type == 8.
-      chunk = _pack('>BB', 0xa3, compress_algo)
-      if mdc_obj:
-        mdc_update(chunk)
-      yield chunk
-    # !! Make filename configurable.
-    literal_type, filename_size, mtime = 'b', 0, 0
-    data = struct.pack('>cBL', literal_type, filename_size, mtime)
-    ufread = iter_to_fread(yield_partial_gpg_packet_chunks(11, data, fread))
+    yield first_plaintext_chunk
+    ufread = iter_to_fread(yield_partial_gpg_packet_chunks(11, literal_header, fread))
     while 1:
       data = ufread(8192)  # !! Is larger faster? Make it configurable.
       if not data:
@@ -2842,25 +2910,12 @@ def encrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash, c
       mdc_update('\xd3\x14')
       yield '\xd3\x14' + mdc_obj.digest()
 
-  def yield_ciphertext_chunks():
-    fr = '\0' * bs
+  def yield_ciphertext_chunks(fr=fr):
     strxor_bs = make_strxor(bs)
-    if not do_mdc:
-      data = strxor_bs(plaintext_salt, encrypt_func(fr))
-      yield data
-      fr = data
-      got2 = make_strxor(2)(encrypt_func(fr)[:2], plaintext_salt[-2:])
-      yield got2
-      fr = data[2:] + got2  # Short copy.
     pfread = iter_to_fread(yield_plaintext_chunks())
     pfread_size = 8192  # !! Make it configurable.
     pfread_size -= pfread_size % bs
     assert pfread_size % bs == 0
-    cfb_encrypt = None
-    try:
-      cfb_encrypt = get_gpg_cipher(cipher_algo, session_key, is_slow_cipher, fr)[0].encrypt
-    except BadCfbCipher:
-      pass
     if pfread_size < (bs << 1):  # Ignore small pfread_size, read bs at a time. <SLOW-ENCRYPTION>.
       while 1:
         data = pfread(bs)
@@ -2904,10 +2959,8 @@ def encrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash, c
           break
         data = pfread(pfread_size)
 
-  packet_type, data = ((9, ''), (18, '\1'))[do_mdc]
-  for chunk in yield_partial_gpg_packet_chunks(
-      packet_type, data, iter_to_fread(yield_ciphertext_chunks())):
-    of.write(chunk)
+  write_partial_gpg_packet_chunks(
+      of.write, packet_type, packet_header, iter_to_fread(yield_ciphertext_chunks(fr)))
 
 
 # --- Command-line parsing and main().
@@ -2944,7 +2997,7 @@ def main(argv):
   of = sys.stdout
   set_fd_binary(of.fileno())
   if argv[1] == '-c':
-    assert not file_class  # !! Add support.
+    assert not is_file_class  # !! Add support.
     # Defaults in GPG <2.1, including 1.4.18.
     # !! Add command-line flags.
     # !! document encryptedfile and other Python modules.
@@ -2960,7 +3013,7 @@ def main(argv):
     do_ascii_armor = False
     salt = None
     do_mdc = True
-    #do_mdc = False
+    #do_mdc = False  # !! True by default back.
     encrypt_symmetric_gpg(inf.read, of, passphrase, is_slow_cipher, is_slow_hash, cipher, hash, compress, compress_level, s2k_mode, s2k_count, salt, do_mdc, do_ascii_armor)
   elif argv[1] == '-d':
     try:
