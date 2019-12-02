@@ -1748,13 +1748,13 @@ def str_to_fread(data):
     raise TypeError
   i_ary = [0]
 
-  def fread(size):
+  def fread_from_str(size):
     i = i_ary[0]
     result = data[i : i + size]
     i_ary[0] = i + len(result)
     return result
 
-  return fread
+  return fread_from_str
 
 
 # GPG defaults: https://en.wikipedia.org/wiki/GNU_Privacy_Guard says that
@@ -1844,9 +1844,10 @@ COMPRESS_ALGOS = {
 
 
 def iter_to_fread(iter_str):
-  data_ary, iter_str = [buffer('')], iter(iter_str)
+  _buffer = buffer
+  data_ary, iter_str = [_buffer('')], iter(iter_str)
 
-  def fread(size):
+  def fread_from_iter(size):
     data = data_ary[0]
     if isinstance(size, tuple):  # ``Give me whatever you have buffered''.
       min_size, mod = size
@@ -1854,28 +1855,66 @@ def iter_to_fread(iter_str):
       ldm = ld - ld % mod
       if ldm < min_size:
         return ''
-      result, data_ary[0] = buffer(data, 0, ldm), buffer(data, ldm)
+      result, data_ary[0] = _buffer(data, 0, ldm), _buffer(data, ldm)
       return result
     if size <= 0:
       return ''
-    result, data = data[:size], buffer(data, size)
+    result, data = data[:size], _buffer(data, size)
     if len(result) < size:
       remaining = size - len(result)
       result = [result]
       while remaining > 0:
         try:
-          data = buffer(iter_str.next())
+          data = _buffer(iter_str.next())
         except StopIteration:
           break
         # This may be a long copy, but there is no way around it.
         result.append(data[:remaining])
-        data = buffer(data, len(result[-1]))
+        data = _buffer(data, len(result[-1]))
         remaining -= len(result[-1])
       result = ''.join(result)
     data_ary[0] = data
     return result
 
-  return fread
+  return fread_from_iter
+
+
+def iter_to_fread_or_all(iter_str):
+  _buffer = buffer
+  data_ary, iter_str = [_buffer('')], iter(iter_str)
+
+  def fread_from_iter(size=()):
+    data = data_ary[0]
+    if size is ():  # Read everything until EOF.
+      result, data_ary[0], data = [data[:]], '', ''
+      while 1:
+        try:
+          # This may be a long copy, but there is no way around it.
+          result.append(iter_str.next()[:])
+        except StopIteration:
+          break
+        result.append(data)
+      return ''.join(result)
+    if size <= 0:
+      return ''
+    result, data = data[:size], _buffer(data, size)
+    if len(result) < size:
+      remaining = size - len(result)
+      result = [result]
+      while remaining > 0:
+        try:
+          data = _buffer(iter_str.next())
+        except StopIteration:
+          break
+        # This may be a long copy, but there is no way around it.
+        result.append(data[:remaining])
+        data = _buffer(data, len(result[-1]))
+        remaining -= len(result[-1])
+      result = ''.join(result)
+    data_ary[0] = data
+    return result
+
+  return fread_from_iter
 
 
 def get_gpg_cipher(cipher_algo, keytable, is_slow_cipher, cfb_iv=None):
@@ -2276,7 +2315,9 @@ class BadPassphraseError(ValueError):
 
 
 def get_decrypt_symmetric_gpg_literal_packet_reader(
-    fread, passphrase, is_slow_cipher, is_slow_hash):
+    fread, passphrase, is_slow_cipher=False, is_slow_hash=False):
+  # Don't add more arguments above, this function is used in
+  # GpgSymmetricFileReader.
   _buffer = buffer
   cipher_algo, session_key, has_mdc, fread = open_symmetric_gpg(
       fread, passphrase, is_slow_cipher, is_slow_hash)
@@ -2525,12 +2566,96 @@ def copy_gpg_literal_data(fread, of):
     raise ValueError('Missing last literal packet.')
 
 
+def yield_gpg_literal_data_chunks(fread):
+  it = yield_gpg_binary_packets(fread)
+  data, is_done = '', True
+  for packet_type, is_partial, data in it:
+    if packet_type != 11:
+      if packet_type == 4 and not is_partial:
+        continue  # Ignore one-pass packet fur public-key signature.
+      raise ValueError('Literal packet expected, got: %d' % packet_type)
+    data = skip_gpg_literal_packet_header(data)[:]
+    yield ''  # Indicate successful init.
+    yield data
+    is_done = not is_partial
+    break
+  else:
+    yield ''  # Indicate successful init.
+  for packet_type, is_partial, data in it:
+    if is_done:
+      if packet_type == 2 and not is_partial:
+        continue  # Ignore public-key signature.
+      raise ValueError('Unexpected packet after literal data: %d' %
+                       packet_type)
+    if packet_type != 11:
+      raise ValueError('Literal packet expected, got: %d' % packet_type)
+    yield data
+    is_done = not is_partial
+  if not is_done:
+    raise ValueError('Missing last literal packet.')
+
+
 def decrypt_symmetric_gpg(fread, of, *args, **kwargs):
   fread = get_decrypt_symmetric_gpg_literal_packet_reader(fread, *args, **kwargs)
   try:
     copy_gpg_literal_data(fread, of)
   finally:
     of.flush()  # Flush before raising MDC mismatch or something else.
+
+
+class GpgSymmetricFileReader(object):
+  """File-like object with .read() method for decrypting symmetric GPG.
+
+  Example usage:
+
+    import getpass
+    f = GpgSymmetricFileReader('FILE.bin.gpg', 'rb', getpass.getpass())
+    try:
+      print(f.read())
+    finally:
+      f.close()
+
+  GpgSymmetricFileReader is able to decrypt files encrypted with GPG
+  symmetric key encryption (passphrase, secret key), conforming to the
+  OpenPGP file format (RFC 4880, e.g. created with GnuPG gpg(1) or pgp(1).
+
+  GpgSymmetricFileReader isn't able to decrypt files encrypted with GPG
+  public-key encryption.
+
+  If the file has a signature, GpgSymmetricFileReader silently ignores (and
+  doesn't validate) the signature.
+
+  If you need something very fast, use
+  get_decrypt_symmetric_gpg_literal_packet_reader and copy_gpg_literal_data
+  instead of this object.
+  """
+
+  __slots__ = ('read', '_f')
+
+  def __init__(self, filename, mode, *args, **kwargs):
+    """Also pass passphrase=... You can pass .read method as filename."""
+    if mode not in ('r', 'rb', 'br'):
+      raise ValueError('Bad mode for GpgSymmetricFileReader: %s' % (mode,))
+    if callable(filename):
+      self._f, fread = None, filename
+    else:
+      self._f = f = open(filename, 'rb')
+      fread = f.read
+    fread = get_decrypt_symmetric_gpg_literal_packet_reader(
+        fread, *args, **kwargs)
+    # !! TODO(pts): Add has_mdc, cipher_algo etc. and other parameters to self.
+    it = yield_gpg_literal_data_chunks(fread)
+    if it.next():  # Wait for successful init.
+      raise ValueError('Expected empty init string.')
+    # TODO(pts): Flush before raising an exception (on e.g. MDC mismatch),
+    # modify iter_to_fread_or_all.
+    self.read = iter_to_fread_or_all(it)
+
+  def close(self):
+    self.read = ()
+    if self._f:
+      self._f.close();
+      self._f = ()
 
 
 # --- GPG encryption.
@@ -2790,7 +2915,7 @@ def encrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash, c
 
 def main(argv):
   argv = list(argv)
-  is_slow_cipher = is_slow_hash = False
+  is_slow_cipher = is_slow_hash = is_file_class = False
   passphrase = lambda: prompt_passphrase(False)
   if len(argv) > 1 and argv[1] == '--decrypt':
     argv[1] = '-d'
@@ -2804,6 +2929,9 @@ def main(argv):
   if len(argv) > 2 and argv[1] in ('-c', '-d') and argv[2] == '--slow-hash':  # Not gpg(1).
     is_slow_hash = True
     del argv[2]
+  if len(argv) > 2 and argv[1] in ('-c', '-d') and argv[2] == '--file-class':  # Not gpg(1).
+    is_file_class = True
+    del argv[2]
   if len(argv) == 3 and argv[1] in ('-c', '-d'):
     passphrase = argv.pop(2)
   if not (len(argv) == 2 and argv[1] != ('-c', '-d')):
@@ -2816,6 +2944,7 @@ def main(argv):
   of = sys.stdout
   set_fd_binary(of.fileno())
   if argv[1] == '-c':
+    assert not file_class  # !! Add support.
     # Defaults in GPG <2.1, including 1.4.18.
     # !! Add command-line flags.
     # !! document encryptedfile and other Python modules.
@@ -2835,7 +2964,19 @@ def main(argv):
     encrypt_symmetric_gpg(inf.read, of, passphrase, is_slow_cipher, is_slow_hash, cipher, hash, compress, compress_level, s2k_mode, s2k_count, salt, do_mdc, do_ascii_armor)
   elif argv[1] == '-d':
     try:
-      decrypt_symmetric_gpg(inf.read, of, passphrase, is_slow_cipher, is_slow_hash)
+      if is_file_class:
+        f = GpgSymmetricFileReader(inf.read, 'rb', passphrase, is_slow_cipher, is_slow_hash)
+        try:
+          #of.write(f.read()); return
+          while 1:
+            data = f.read(8192)
+            if not data:
+              break
+            of.write(data)
+        finally:
+          f.close()
+      else:
+        decrypt_symmetric_gpg(inf.read, of, passphrase, is_slow_cipher, is_slow_hash)
     except BadPassphraseError, e:
       msg = str(e)
       sys.stderr.write('fatal: %s%s\n' % (msg[0].lower(), msg[1:].rstrip('.')))
