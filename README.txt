@@ -45,6 +45,9 @@ Tools for decrypting symmetric key GPG message
 * pgpy: python -c 'import getpass, sys, pgpy; sys.stdout.write(pgpy.PGPMessage.from_file(sys.argv[1]).decrypt(getpass.getpass("Enter passphrase: ")).message)' FILE.bin.gpg >FILE.bin
   installation: pip install pgpy  # Has lots of dependendes, use virtualenv.
 
+https://github.com/thenoviceoof/encryptedfile supports only encryption,
+--no-mdc and `--compress-algo none'.
+
 Speed
 ~~~~~
 For string-to-key conversion, data is grouped to chunks of almost 65536
@@ -122,5 +125,11 @@ Encryption (and compression) benchmark measurements on Linux amd64, Debian
 
   $ time gpg -c --pinentry-mode loopback --cipher-algo aes-256 --digest-algo sha1 --s2k-count 65536 --compress-algo zip --compress-level 9 --force-mdc <hellow5long.bin >hellowc5long.bin.gpg
   6.444s user
+
+  This is very slow.
+  $ time python -c 'import encryptedfile; f = encryptedfile.EncryptedFile("hellow5longef.bin.gpg", "abc", encryption_algo=encryptedfile.EncryptedFile.ALGO_AES256); f.write(open("hellow5long.gpg", "rb").read()); f.close()'
+  1847.260s user
+
+Some other Python PGP projects are listed here: https://pypi.org/project/py-pgp/
 
 __END__

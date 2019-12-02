@@ -2471,6 +2471,7 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash):
     if done_state == 0:
       if len(data) < 6:
         raise ValueError('First literal packet too short.')
+      # !! Make filename configurable.
       literal_type, filename_size = struct.unpack('>cB', data[:2])
       if literal_type not in 'btul1':
         raise ValueError('Bad literal type: %r' % literal_type)
@@ -2763,7 +2764,7 @@ def main(argv):
     cipher = 'aes-256'
     hash = 'sha1'
     compress = 'zip'
-    #compress = 'uncompressed'
+    #compress = 'uncompressed'  # !! Make it work with 'none'.
     compress_level = 6  # For benchmarks, same as default gpg --compress-level=6.
     #compress_level = 9  # Maximum.
     s2k_mode = 3
