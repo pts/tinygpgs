@@ -2260,7 +2260,8 @@ class BadPassphraseError(ValueError):
   """Raised when a bad passphrase is detected early at decryption."""
 
 
-def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash):
+def get_decrypt_symmetric_gpg_literal_packet_reader(
+    fread, passphrase, is_slow_cipher, is_slow_hash):
   _buffer = buffer
   cipher_algo, session_key, has_mdc, fread = open_symmetric_gpg(
       fread, passphrase, is_slow_cipher, is_slow_hash)
@@ -2350,7 +2351,7 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash):
     except (TypeError, ValueError, AttributeError):
       zdml = None  # lambda data1, _zdd: (_zdd(data1,))  # bz2 doesn't have it.
 
-  def yield_data_chunks(data1, data, encrypt_func):
+  def yield_data_chunks(data1, data, encrypt_func, mdc_obj):
     if mdc_obj:
       # We don't process data1 yet, because we want to remove the MDC packet
       # (22 bytes, packet_type == 19, starts with '\xd3\x14') from the end first.
@@ -2450,7 +2451,7 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash):
               yield zd_decompress(data1)
             else:
               yield data1
-    if mdc_obj:  # Process mdc_queue.
+    if mdc_obj:
       if len(mdc_queue) < 22:
         raise ValueError('EOF in encrypted data before MDC packet.')
       if mdc_queue[-22 : -20] != '\xd3\x14':  # packet_type == 19.
@@ -2458,9 +2459,8 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash):
       mdc_queue, mdc = _buffer(mdc_queue, 0, len(mdc_queue) - 22), _buffer(mdc_queue, len(mdc_queue) - 20)
       mdc_obj.update(mdc_queue)
       mdc_obj.update('\xd3\x14')
-      if _buffer(mdc_obj.digest()) != mdc:
-        # !! Yield as much data as possible first, flush the output.
-        raise ValueError('MDC mismatch, message may have been tampered with.')
+      if _buffer(mdc_obj.digest()) == mdc:
+        mdc_obj = None
     if mdc_queue:
       if zdml:
         for chunk in zdml(mdc_queue):
@@ -2471,10 +2471,17 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash):
         yield mdc_queue
     if zd and getattr(zd, 'flush', None):
       yield zd.flush()
+    # Do this after the very last yield.
+    if mdc_obj:
+      raise ValueError('MDC mismatch, message may have been tampered with.')
 
-  fread2 = iter_to_fread(yield_data_chunks(data1, data, encrypt_func))
+  return iter_to_fread(yield_data_chunks(data1, data, encrypt_func, mdc_obj))
+
+
+def copy_gpg_literal_data(fread, of):
+  _buffer = buffer
   done_state = 0
-  for packet_type, is_partial, data in yield_gpg_binary_packets(fread2):
+  for packet_type, is_partial, data in yield_gpg_binary_packets(fread):
     if done_state == 2:
       raise ValueError('Unexpected packet after literal data: %d' %
                        packet_type)
@@ -2483,7 +2490,6 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash):
     if done_state == 0:
       if len(data) < 6:
         raise ValueError('First literal packet too short.')
-      # !! Make filename configurable.
       literal_type, filename_size = struct.unpack('>cB', data[:2])
       if literal_type not in 'btul1':
         raise ValueError('Bad literal type: %r' % literal_type)
@@ -2495,6 +2501,14 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash):
     done_state = 1 + (not is_partial)
   if done_state == 1:
     raise ValueError('Missing last literal packet.')
+
+
+def decrypt_symmetric_gpg(fread, of, *args, **kwargs):
+  fread = get_decrypt_symmetric_gpg_literal_packet_reader(fread, *args, **kwargs)
+  try:
+    copy_gpg_literal_data(fread, of)
+  finally:
+    of.flush()  # Flush before raising MDC mismatch or something else.
 
 
 # --- GPG encryption.
@@ -2659,6 +2673,7 @@ def encrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash, c
       if mdc_obj:
         mdc_update(chunk)
       yield chunk
+    # !! Make filename configurable.
     literal_type, filename_size, mtime = 'b', 0, 0
     data = struct.pack('>cBL', literal_type, filename_size, mtime)
     ufread = iter_to_fread(yield_partial_gpg_packet_chunks(11, data, fread))
