@@ -11,7 +11,7 @@ Usage:
 
 Features:
 
-* fast: decrypts <1.26 times slower than gpg(1), and encrypts <2.93 times
+* fast: decrypts <1.26 times slower than gpg(1), and encrypts <1.37 times
   slower than gpg(1), see section ``Speed'' below.
 * small, constant memory usage: code + bzip2 decompression dictionary
   and output buffer (can be serveral MiBs) + <128 KiB buffers.
@@ -66,11 +66,10 @@ source code.
 
 There is a similar speedup implemented for `tinygpgs -c', see
 <FAST-ENCRYPTION> in the source code for more details. The optimization
-there is less effective (yielding a <2.93 times slowdown compared to
-gpg(1)), because larger strxor buffering is not possible because how the
-encryption in CFB mode works. With larget strxor buffering, `tinygpgs -c'
-would be only <1.21 times slower than gpg(1). See <BAD-FAST-ENCRYPTION>
-in the code for more details.
+there is a bit less effective, it uses the PyCrypto cipher objects in
+MODE_ECB, it's <1.37 times slower than GPG. The large strxor trick could
+make it just <1.21 times slower, but its output is incorrect: we need many
+calls to strxor in a feedback for MODE_ECB encryption.
 
 Benchmarks
 ~~~~~~~~~~
@@ -112,16 +111,20 @@ Debian 9.4:
 Encryption (and compression) benchmark measurements on Linux amd64, Debian
 9.4:
 
+  <FAST-ENCRYPTION>, default.
+  $ time ./tinygpgs -c abc <hellow5long.bin >hellowc5long.bin.gpg
+  info: GPG symmetric encrypt cipher_algo=aes-256 is_py_cipher=0 s2k_mode=iterated-salted digest_algo=sha1 is_py_digest=0 count=65536 len(salt)=8 len(encrypted_session_key)=0 do_mdc=1 len(session_key)=32
+  8.828s user
+
+  <MEDIUM-ENCRYPTION>.
   $ time ./tinygpgs -c abc <hellow5long.bin >hellowc5long.bin.gpg
   info: GPG symmetric encrypt cipher_algo=aes-256 is_py_cipher=0 s2k_mode=iterated-salted digest_algo=sha1 is_py_digest=0 count=65536 len(salt)=8 len(encrypted_session_key)=0 do_mdc=1 len(session_key)=32
   18.856s user
 
-  This produces incorrect output, but it makes fewer calls to _fast_strxor
-  and encrypt_func, thus indicating an estimate on the best possible
-  achievable speed in Python:
+  <SLOW-ENCRYPTION>, doesn't use a write buffer.
   $ time ./tinygpgs -c abc <hellow5long.bin >hellowc5long.bin.gpg
   info: GPG symmetric encrypt cipher_algo=aes-256 is_py_cipher=0 s2k_mode=iterated-salted digest_algo=sha1 is_py_digest=0 count=65536 len(salt)=8 len(encrypted_session_key)=0 do_mdc=1 len(session_key)=32
-  7.860s user
+  59.988s user
 
   $ time gpg -c --pinentry-mode loopback --cipher-algo aes-256 --digest-algo sha1 --s2k-count 65536 --compress-algo zip --compress-level 9 --force-mdc <hellow5long.bin >hellowc5long.bin.gpg
   6.444s user

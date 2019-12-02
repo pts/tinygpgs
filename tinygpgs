@@ -1628,8 +1628,14 @@ del _idea_mul, _idea_inv, _idea_crypt
 # --- Cipher getters.
 
 
-def try_crypto_cipher(cipher, is_slow_cipher, module_name, fallback_cons):
+class BadCfbCipher(ValueError):
+  """Raised when a cipher cannot be created in CFB mode."""
+
+
+def try_crypto_cipher(cipher, is_slow_cipher, is_cfb, module_name, fallback_cons):
   if is_slow_cipher:
+    if is_cfb:
+      raise BadCfbCipher('Slow cipher %s does not support CFB.' % cipher)
     if callable(fallback_cons):
       return fallback_cons
     raise ImportError('No embedded implementation of cipher %s.' % cipher)
@@ -1644,7 +1650,7 @@ def try_crypto_cipher(cipher, is_slow_cipher, module_name, fallback_cons):
     # This is usually much faster than fallback_cons, because this is
     # implemented in C.
     return cons
-  elif callable(fallback_cons):
+  elif not is_cfb and callable(fallback_cons):
     return fallback_cons
   else:
     raise ImportError(
@@ -1652,14 +1658,14 @@ def try_crypto_cipher(cipher, is_slow_cipher, module_name, fallback_cons):
         (module_name, cipher))
 
 
-def new_cipher(cipher, is_slow_cipher=False):
+def get_cipher_cons(cipher, is_slow_cipher, is_cfb):
   cipher = cipher.lower()
   # !! Cache the returned constructors (separately by is_slow_cipher).
   if cipher in ('cast5', 'cast5-128', 'cast-128'):
-    return try_crypto_cipher(cipher, is_slow_cipher, '_CAST', CAST5), 8
+    return try_crypto_cipher(cipher, is_slow_cipher, is_cfb, '_CAST', CAST5), 8
   elif cipher in ('aes', 'aes-128', 'aes-192', 'aes-256'):
-    cons = try_crypto_cipher(cipher, is_slow_cipher, '_AES', AES)
-    if cons is AES and not is_slow_cipher:
+    cons = try_crypto_cipher(cipher, is_slow_cipher, is_cfb, '_AES', AES)
+    if cons is AES and not is_slow_cipher and not is_cfb:
       cons2 = None
       try:
         cons2 = getattr(__import__('aes'), 'Keysetup', None)
@@ -1669,17 +1675,17 @@ def new_cipher(cipher, is_slow_cipher=False):
         cons = cons2
     return cons, 16
   elif cipher in ('des3', '3des'):
-    return try_crypto_cipher(cipher, is_slow_cipher, '_DES3', DES3), 8
+    return try_crypto_cipher(cipher, is_slow_cipher, is_cfb, '_DES3', DES3), 8
   elif cipher in ('des'):
-    return try_crypto_cipher(cipher, is_slow_cipher, '_DES', DES), 8
+    return try_crypto_cipher(cipher, is_slow_cipher, is_cfb, '_DES', DES), 8
   elif cipher == 'blowfish':
-    return try_crypto_cipher(cipher, is_slow_cipher, '_Blowfish', Blowfish), 8
+    return try_crypto_cipher(cipher, is_slow_cipher, is_cfb, '_Blowfish', Blowfish), 8
   elif cipher in ('twofish-256', 'twofish-128'):
     # Doesn't exist in PyCrypto <=2.7.
-    return try_crypto_cipher(cipher, is_slow_cipher, '_Twofish', Twofish), 16
+    return try_crypto_cipher(cipher, is_slow_cipher, is_cfb, '_Twofish', Twofish), 16
   elif cipher == 'idea':
     # Doesn't exist in PyCrypto <=2.7.
-    return try_crypto_cipher(cipher, is_slow_cipher, '_IDEA', IDEA), 8
+    return try_crypto_cipher(cipher, is_slow_cipher, is_cfb, '_IDEA', IDEA), 8
   else:
     raise ValueError('Unsupported cipher: %s' % cipher)
 
@@ -1872,19 +1878,23 @@ def iter_to_fread(iter_str):
   return fread
 
 
-def get_gpg_cipher(cipher_algo, keytable, is_slow_cipher):
+def get_gpg_cipher(cipher_algo, keytable, is_slow_cipher, cfb_iv=None):
   """Returns (codebook, block_size)."""
   if cipher_algo not in CIPHER_ALGOS:
     raise ValueError('Unsupported cipher_algo: %d' % cipher_algo)
   if KEYTABLE_SIZES[cipher_algo] != len(keytable):
     raise ValueError('Session key must be %d bytes for cipher_algo %s, got: %d' %
                      (KEYTABLE_SIZES[cipher_algo], CIPHER_ALGOS[cipher_algo], len(keytable)))
-  # TODO(pts): Use MODE_CFB and MODE_OPENPGP for speed in Crypto.Cipher.
-  #
-  # The ciphers below (CAST5 and AES) cover the GPG defaults between 1.0.6
+  # !! move to doc: The cipher CAST5 and AES cover the GPG defaults between 1.0.6
   # (2001-06-01) and 2.2.17 (2019-07-09); https://en.wikipedia.org/wiki/GNU_Privacy_Guard says that CAST5 has been the default
   # cipher since the beginning (GPGP 0.9.x, 1999) until <2.1.
-  cipher_cons, block_size = new_cipher(CIPHER_ALGOS[cipher_algo], is_slow_cipher)
+  cipher_cons, block_size = get_cipher_cons(CIPHER_ALGOS[cipher_algo], is_slow_cipher, cfb_iv)
+  if cfb_iv:
+    MODE_CFB = 3  # PyCrypto.
+    try:
+      return cipher_cons(keytable, MODE_CFB, cfb_iv, segment_size=(block_size << 3)), block_size
+    except (TypeError, ValueError), e:  # Example: All slow ciphers (is_slow_cipher).
+      raise BadCfbCipher(str(e))
   return cipher_cons(keytable), block_size
 
 
@@ -2389,8 +2399,10 @@ def decrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash):
               yield zd_decompress(mdc_queue)
             else:
               yield mdc_queue
-          # Crypto.Cipher._AES.MODE_CFB and mode 5 don't work: they
-          # produce different results even for long test vectors
+          # A single call to _fast_strxor is faster than
+          # Crypto.Cipher._AES.MODE_CFB with segment_size=(bs << 3).
+          #
+          # Test vectors:
           # https://github.com/ircmaxell/PHP-PasswordLib/blob/master/test/Data/Vectors/aes-cfb.test-vectors
           # , so we usse manual strxor instead.
           #
@@ -2558,7 +2570,7 @@ def yield_partial_gpg_packet_chunks(packet_type, data, fread, _pack=struct.pack)
 
 
 def encrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash, cipher, hash, compress, compress_level, s2k_mode, s2k_count, salt, do_mdc, do_ascii_armor):
-  _pack = struct.pack
+  _pack, _buffer = struct.pack, buffer
   do_mdc = bool(do_mdc)
   if do_ascii_armor:
     raise ValueError('ASCII armor not implemented.')  # !! Implement it.
@@ -2669,56 +2681,66 @@ def encrypt_symmetric_gpg(fread, of, passphrase, is_slow_cipher, is_slow_hash, c
       yield '\xd3\x14' + mdc_obj.digest()
 
   def yield_ciphertext_chunks():
-    fre = encrypt_func('\0' * bs)
+    fr = '\0' * bs
     strxor_bs = make_strxor(bs)
     if not do_mdc:
-      data = strxor_bs(plaintext_salt, fre)
+      data = strxor_bs(plaintext_salt, encrypt_func(fr))
       yield data
-      fre = encrypt_func(data)
-      got2 = make_strxor(2)(fre[:2], plaintext_salt[-2:])
+      fr = data
+      got2 = make_strxor(2)(encrypt_func(fr)[:2], plaintext_salt[-2:])
       yield got2
-      fre = encrypt_func(data[2:] + got2)  # Short copy.
+      fr = data[2:] + got2  # Short copy.
     pfread = iter_to_fread(yield_plaintext_chunks())
-    _fast_strxor = fast_strxor
-    if _fast_strxor and type(encrypt_func) is type(lambda: 0):  # Not fast C extension.
-      _fast_strxor = None
     pfread_size = 8192  # !! Make it configurable.
-    if _fast_strxor and pfread_size >= (bs << 1):
-      pfread_size -= pfread_size % bs
-      buf = []
-      while 1:
-        data = pfread(pfread_size)
-        if not data:
-          break
-        lda = len(data)
-        ldbs = lda - lda % bs
-        data, datax = data[:ldbs], data[ldbs:]
-        # Unfortunately we can't process data with a single big call to
-        # _fast_strxor, because we need to call encrypt_func many times, in
-        # a feedback.
-        #
-        # This is <FAST-ENCRYPTION> below.
-        del buf[:]
-        for i in xrange(0, ldbs, bs):
-          buf.append(strxor_bs(data[i : i + bs], fre))
-          fre = encrypt_func(buf[-1])
-        yield ''.join(buf)
-        # This comment below is <BAD_FAST-ENCRYPTION>.
-        # data = _fast_strxor(data, fre + data[:-bs])
-        # yield data
-        # fre = encrypt_func(data[-bs:])
-        if datax:
-          data = datax
-          break
-    else:
+    pfread_size -= pfread_size % bs
+    assert pfread_size % bs == 0
+    cfb_encrypt = None
+    try:
+      cfb_encrypt = get_gpg_cipher(cipher_algo, session_key, is_slow_cipher, fr)[0].encrypt
+    except BadCfbCipher:
+      pass
+    if pfread_size < (bs << 1):  # Ignore small pfread_size, read bs at a time. <SLOW-ENCRYPTION>.
       while 1:
         data = pfread(bs)
         if len(data) < bs:
+          if data:
+            yield strxor_bs(data + '\0' * (bs - len(data)), encrypt_func(fr))[:len(data)]
           break
-        data = strxor_bs(data, fre)  # CFB mode.
+        data = strxor_bs(data, encrypt_func(fr))  # CFB mode.
         yield data
-        fre = encrypt_func(data)
-    yield strxor_bs(data + '\0' * (bs - len(data)), fre)[:len(data)]
+        fr = data
+    elif cfb_encrypt:  # <FAST-ENCRYPTION>.
+      buf = []
+      data = pfread(pfread_size)
+      while data:
+        if len(data) % bs:  # Unlikey, near end.
+          ldbs = len(data) - len(data) % bs
+          yield cfb_encrypt(_buffer(data, 0, ldbs))
+          data = data[ldbs:]
+          yield cfb_encrypt(data + '\0' * (bs - len(data)))[:len(data)]
+          break
+        else:  # Likely, critical path.
+          yield cfb_encrypt(data)
+        data = pfread(pfread_size)
+    else:  # <MEDIUM-ENCRYPTION>.
+      # This is <2.1387 times slower than FAST-ENCRYPTION above, but it's
+      # 3.1834 times faster than <SLOW-ENCRYPTION> if pfread_size is 8192 bytes.
+      pfread_size -= pfread_size % bs
+      buf = []
+      data = pfread(pfread_size)
+      while data:
+        lda = len(data)
+        ldbs = lda - lda % bs
+        data, datax = data[:ldbs], data[ldbs:]
+        del buf[:]
+        for i in xrange(0, ldbs, bs):
+          buf.append(strxor_bs(data[i : i + bs], encrypt_func(fr)))
+          fr = buf[-1]
+        yield ''.join(buf)
+        if datax:
+          yield strxor_bs(datax + '\0' * (bs - len(datax)), encrypt_func(fr))[:len(datax)]
+          break
+        data = pfread(pfread_size)
 
   packet_type, data = ((9, ''), (18, '\1'))[do_mdc]
   for chunk in yield_partial_gpg_packet_chunks(
