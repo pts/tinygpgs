@@ -2015,10 +2015,11 @@ def yield_gpg_binary_packets(fread, c0=''):
             size -= size2
         assert 0 < size <= 8192
       elif size > 46:
-        # We could easily handle megabytes, but the output of `gpg
-        # --symmetric' just doesn't have such packets.
-        raise ValueError('Packet size unusually large: type %d, size %d' %
-                         (packet_type, size))
+        if not (packet_type == 2 and size < 8192):
+          # We could easily handle megabytes, but the output of `gpg
+          # --symmetric' just doesn't have such packets.
+          raise ValueError('Packet size unusually large: type %d, size %d' %
+                           (packet_type, size))
       data = fread(size)
       if len(data) < size:
         raise ValueError('EOF in packet, type %d' % packet_type)
@@ -2114,8 +2115,22 @@ def yield_gpg_packets(fread):
     c = fread(1)
     if not c:
       raise ValueError('Empty GPG ASCII armor data.')
-  if c not in '\x8c\x8d\x8e\xc3':  # packet_type == 3 (SKESK).
-    raise ValueError('Bad GPG symmetric encrypted data (SKESK packet expected).')
+  b, packet_type = ord(c), -1
+  if b & 128:
+    packet_type = (b & 63) >> ((~b >> 5) & 2)
+  if packet_type != 3:  # packet_type == 3 (SKESK), c in '\x8c\x8d\x8e\xc3'.
+    if packet_type < 0:
+      raise ValueError('Bad GPG data, packet expected.')
+    if not 1 <= packet_type <= 19:
+      raise ValueError('Bad GPG data, packet expected, got unusual packet of type: %d' % packet_type)
+    # TODO(pts): Add support for `gpg -e --sign': '\x90\x91\x92\xc4' (packet_type == 4), also packet_type == 2.
+    if packet_type == 8:
+      raise ValueError('GPG symmetric key encrypted data expected, got compressed data (probably public-key signed message).')
+    if packet_type in (2, 4):
+      raise ValueError('GPG symmetric key encrypted data expected, got public-key signed data.')
+    if packet_type == 1:
+      raise ValueError('GPG symmetric key encrypted data expected, got public-key encrypted data.')
+    raise ValueError('Bad GPG symmetric encrypted data (SKESK packet expected), got packet of type: %d' % packet_type)
   for packet in yield_gpg_binary_packets(fread, c):
     yield packet
 
@@ -2130,7 +2145,7 @@ def open_symmetric_gpg(f, passphrase, is_slow_cipher, is_slow_hash):
     break
   else:
     raise ValueError('EOF before SKESK packet.')
-  # Symmetric-Key Encrypted Session Key Packet
+  # Symmetric-Key Encrypted Session Key Packet.
   if packet_type != 3:
     raise ValueError('Expected SKESK packet type, got: %d' % packet_type)
   if not 4 <= len(data) <= 46:
@@ -2478,25 +2493,32 @@ def get_decrypt_symmetric_gpg_literal_packet_reader(
   return iter_to_fread(yield_data_chunks(data1, data, encrypt_func, mdc_obj))
 
 
+def skip_gpg_literal_packet_header(data):
+  if len(data) < 6:
+    raise ValueError('First literal packet too short.')
+  literal_type, filename_size = struct.unpack('>cB', data[:2])
+  if literal_type not in 'btul1':
+    raise ValueError('Bad literal type: %r' % literal_type)
+  if len(data) < 6 + filename_size:
+    raise ValueError('First literal packet too short for filename.')
+  # First we get filename, then the date (4 bytes), 4 byte Unix timestamp.
+  return buffer(data, 6 + filename_size)
+
+
 def copy_gpg_literal_data(fread, of):
-  _buffer = buffer
   done_state = 0
   for packet_type, is_partial, data in yield_gpg_binary_packets(fread):
     if done_state == 2:
+      if packet_type == 2 and not is_partial:
+        continue  # Ignore public-key signature.
       raise ValueError('Unexpected packet after literal data: %d' %
                        packet_type)
     if packet_type != 11:
-      raise ValueError('Literal packet expected.')
+      if packet_type == 4 and not is_partial and done_state == 0:
+        continue  # Ignore one-pass packet fur public-key signature.
+      raise ValueError('Literal packet expected, got: %d' % packet_type)
     if done_state == 0:
-      if len(data) < 6:
-        raise ValueError('First literal packet too short.')
-      literal_type, filename_size = struct.unpack('>cB', data[:2])
-      if literal_type not in 'btul1':
-        raise ValueError('Bad literal type: %r' % literal_type)
-      if len(data) < 6 + filename_size:
-        raise ValueError('First literal packet too short for filename.')
-      # First we get filename, then the date (4 bytes), 4 byte Unix timestamp.
-      data = _buffer(data, 6 + filename_size)
+      data = skip_gpg_literal_packet_header(data)
     of.write(data)
     done_state = 1 + (not is_partial)
   if done_state == 1:
