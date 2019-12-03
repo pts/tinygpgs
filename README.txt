@@ -1,7 +1,8 @@
 tinygpgs: symmetric key encryption tool compatible with GPG
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-tinygpgs is a Python 2 script and library for doing symmetric key encryption
-and decryption using the OpenPGP file format compatible with GPG (GnuPG).
+tinygpgs is a fast and standalone Python 2 script and library for doing
+symmetric key encryption and decryption using the OpenPGP file format
+compatible with GPG (GnuPG).
 
 Usage:
 
@@ -13,9 +14,14 @@ Features:
 
 * fast: decrypts <1.26 times slower than gpg(1), and encrypts <1.37 times
   slower than gpg(1), see section ``Speed'' below.
+* all ciphers and hashes: supports all ciphers and hashes in the OpenPGP
+  spec, including those which PyCrypo doesn't support.
 * small, constant memory usage: code + bzip2 decompression dictionary
   and output buffer (can be serveral MiBs) + <128 KiB buffers.
-* tool compatibility: command-line flags compatible with gpg(1).
+* interoperability: both encryption and decryption works with files to and
+  from gpg(1), checked versions 1.0.6, 1.4.1, 1.4.18, 2.1.18, 2.2.17.
+* tool compatibility: command-line flags compatible with gpg(1), moslty
+  with the same defaults.
 * minimal dependencies: Works out-of-the-box with standard Python modules,
   but becomes much faster if PyCrypto is installed.
 * any Python 2: works with any Python 2.4, 2.5, 2.6 or 2.7.
@@ -23,7 +29,7 @@ Features:
 Planned features:
 
 * encryption: Make it more configurable with command-line flags,
-  as a replacement of `gpg --symmetric' `gpg -c'.
+  as a replacement of `gpg --symmetric' == `gpg -c'.
 * Python 3: Make it work with Python >=3.5 (e.g. Debian 9) as well, keeping
   Python 2 compatibility.
 * docs: Add documentation and help.
@@ -33,10 +39,26 @@ Explicit non-features:
 
 * asymmetric (public key) encryption
 * asymmetric (public key) signing
-* gpg-agent support
+* gpg-agent support (e.g. storing passphrases in the agent)
 * key management: ~/.gnupg/pubring.gpg and ~/.gnupg/secring.pgp
-* asymmetric key generation
+* asymmetric key (keypair) generation
 * trust model
+
+Dependencies:
+
+* Python 2.4, 2.5, 2.6 or 2.7. It currently doesn't work with Python 3.
+* Optionally, PyCrypto for fast encryption and decryption. If PyCrypto is
+  not available, embedded fallback pure Python code is used instead, but
+  that can be >400 times slower than PyCrypto.
+* Optionally, hashlib with OpenSSL for fast hashes (string-to-key and
+  modification detection). If hashlib isn't available (or it doesn't
+  support the hash needed), embedded fallback pure Python code is used
+  instead, but that can be >400 times slower (~162 times for SHA-1)
+  than hashlib with OpenSSL.
+* Only for zip and zlib (de)compression, the standard Python module zip.
+* Only dor bzip2 (de)compression, the standard Python module bzip2.
+* Only for interactive passphrase prompts, the standard Python module
+  getpass. (Use --passphrase or similar to avoid the prompt.)
 
 tinygpgs is free software, GNU GPL >=2.0. There is NO WARRANTY. Use at your
 risk.
@@ -50,6 +72,30 @@ Tools for decrypting symmetric key GPG message
 
 https://github.com/thenoviceoof/encryptedfile supports only encryption,
 --no-mdc and `--compress-algo none'.
+
+Some other Python PGP projects are listed here: https://pypi.org/project/py-pgp/
+
+GPG symmetric key encryption steps
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+GPG (and OpenPGP) does the following for encryption:
+
+1. Generates a random 8-byte salt1 and a random salt2.
+2. Computes the session key from the passphrase by computing a hash
+   (typically SHA-1) of a (configurably) long repeat of the (salt1 +
+   passphrase). This has similar purpose as of PBKDF2, but the actual
+   algorithm is very different.
+3. Optionally compresses the plaintext (with zip, zlib or bzip2).
+4. Optionally computes the SHA-1 hash (20 bytes) of the compressed plaintext,
+   and appends it.
+5. Encrypts the result with a block cipher (CAST5 or AES by default) in CFB
+   mode, with a random salt2 of 8 or 16 bytes (same as the cipher block size),
+   repeating 2 bytes of the salt2 in the ciphertext, so that an incorrect
+   passphrase can be detected at decryption time with high probability.
+6. Splits the compressed output to packets with fixed payload size (typically
+   8192 bytes).
+7. Adds a header.
+8. Optionally converts the binary output to Base64 (ASCII), and adds a header
+   (-----BEGIN PGP MESSAGE-----).
 
 Speed
 ~~~~~
@@ -151,7 +197,5 @@ Encryption (and compression) benchmark measurements on Linux amd64, Debian
   encryptedfile: This is very-very slow.
   $ time python -c 'import encryptedfile; f = encryptedfile.EncryptedFile("hellow5longef.bin.gpg", "abc", encryption_algo=encryptedfile.EncryptedFile.ALGO_AES256); f.write(open("hellow5long.gpg", "rb").read()); f.close()'
   1847.260s user
-
-Some other Python PGP projects are listed here: https://pypi.org/project/py-pgp/
 
 __END__
