@@ -1,7 +1,7 @@
 tinygpgs: symmetric key encryption tool compatible with GPG
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-tinygpgs is a Python 2 script for doing symmetric key encryption and
-decryption using the OpenPGP file format compatible with GPG (GnuPG).
+tinygpgs is a Python 2 script and library for doing symmetric key encryption
+and decryption using the OpenPGP file format compatible with GPG (GnuPG).
 
 Usage:
 
@@ -24,8 +24,8 @@ Planned features:
 
 * encryption: Make it more configurable with command-line flags,
   as a replacement of `gpg --symmetric' `gpg -c'.
-* Python 3: Make it work with Python >=3.5 as well, keeping Python 2
-  compatibility.
+* Python 3: Make it work with Python >=3.5 (e.g. Debian 9) as well, keeping
+  Python 2 compatibility.
 * docs: Add documentation and help.
 * Python library: Upload it to PyPI, make `pip install tinygpgs' work.
 
@@ -37,6 +37,9 @@ Explicit non-features:
 * key management: ~/.gnupg/pubring.gpg and ~/.gnupg/secring.pgp
 * asymmetric key generation
 * trust model
+
+tinygpgs is free software, GNU GPL >=2.0. There is NO WARRANTY. Use at your
+risk.
 
 Tools for decrypting symmetric key GPG message
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -100,17 +103,17 @@ Debian 9.4:
   3.168s user
 
   With standard OpenSSL hashlib + PyCrypto.
-  $ time python2.7 tinygpgs -d abc <hellow5long.bin.gpg >hellow5long.out
+  $ time python2.7 tinygpgs -d --passphrase abc <hellow5long.bin.gpg >hellow5long.out
   3.980s user
 
   With standard OpenSSL hashlib + PyCrypto, using the GpgSymmetricFileReader
   file class API.
-  $ time python2.7 tinygpgs -d abc <hellow5long.bin.gpg >hellow5long.out
+  $ time python2.7 tinygpgs -d --passphrase abc <hellow5long.bin.gpg >hellow5long.out
   4.388s user
 
   Old, slow tinygpgs, before the commit ``added speedup for the critical,
   common decryption path'':
-  $ time python2.7 tinygpgs -d abc <hellow5long.bin.gpg >hellow5long.out
+  $ time python2.7 tinygpgs -d --passphrase abc <hellow5long.bin.gpg >hellow5long.out
   109.692s user
 
   pgpy: This is very slow.
@@ -123,22 +126,22 @@ Encryption (and compression) benchmark measurements on Linux amd64, Debian
 9.4:
 
   <FAST-ENCRYPTION> with standard OpenSSL hashlib + PyCrypto, default.
-  $ time python2.7 tinygpgs -c abc <hellow5long.bin >hellowc5long.bin.gpg
+  $ time python2.7 tinygpgs -c --passphrase abc <hellow5long.bin >hellowc5long.bin.gpg
   info: GPG symmetric encrypt cipher_algo=aes-256 is_py_cipher=0 s2k_mode=iterated-salted digest_algo=sha1 is_py_digest=0 count=65536 len(salt)=8 len(encrypted_session_key)=0 do_mdc=1 len(session_key)=32
   8.828s user
 
   <FAST-ENCRYPTION>, with GpgSymmetricFileWriter file class API.
-  $ time python2.7 tinygpgs -c --file-class abc <hellow5long.bin >hellowc5long.bin.gpg
+  $ time python2.7 tinygpgs -c --file-class --passphrase abc <hellow5long.bin >hellowc5long.bin.gpg
   info: GPG symmetric encrypt cipher_algo=aes-256 is_py_cipher=0 s2k_mode=iterated-salted digest_algo=sha1 is_py_digest=0 count=65536 len(salt)=8 len(encrypted_session_key)=0 do_mdc=1 len(session_key)=32
   8.688s user
 
   <MEDIUM-ENCRYPTION>.
-  $ time python2.7 tinygpgs -c abc <hellow5long.bin >hellowc5long.bin.gpg
+  $ time python2.7 tinygpgs -c --passphrase abc <hellow5long.bin >hellowc5long.bin.gpg
   info: GPG symmetric encrypt cipher_algo=aes-256 is_py_cipher=0 s2k_mode=iterated-salted digest_algo=sha1 is_py_digest=0 count=65536 len(salt)=8 len(encrypted_session_key)=0 do_mdc=1 len(session_key)=32
   18.856s user
 
   <SLOW-ENCRYPTION>, doesn't use a write buffer.
-  $ time python2.7 tinygpgs -c abc <hellow5long.bin >hellowc5long.bin.gpg
+  $ time python2.7 tinygpgs -c --passphrase abc <hellow5long.bin >hellowc5long.bin.gpg
   info: GPG symmetric encrypt cipher_algo=aes-256 is_py_cipher=0 s2k_mode=iterated-salted digest_algo=sha1 is_py_digest=0 count=65536 len(salt)=8 len(encrypted_session_key)=0 do_mdc=1 len(session_key)=32
   59.988s user
 

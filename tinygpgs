@@ -28,9 +28,8 @@ All ciphers and hashes defined in the OpenPGP RFC
 # !! Add help and docs.
 # !! Find ASCII armor later in the file, like how gpg(1) finds it.
 # !! Add gpg(1) compatibility flags: --passphrase-repeat n, --passphrase-fd n, --passphrase-file file, --passphrase string.
-# !! Add better command-line parsing.
-# !! Add license.
 # !! Add warning if slow becaue of Python hash or cipher.
+# !! Document encryptedfile and other Python modules.
 
 import itertools
 import struct
@@ -2702,6 +2701,8 @@ def yield_partial_gpg_packet_chunks(packet_type, data, fread, buflog2cap, _pack=
     raise ValueError('Invalid GPG partial packet type: %d' % packet_type)
   if buflog2cap > 30:  # The GPG file format doesn't support more.
     raise ValueError('buflog2cap must be at most 30, got: %d' % buflog2cap)
+  if buflog2cap < 9:  # The GPG file format doesn't support less for the first partial packet.
+    raise ValueError('buflog2cap must be at least 9, got: %d' % buflog2cap)
   bufsize = 1 << buflog2cap
   if len(data) > bufsize:
     raise ValueError('Initial partial data too long.')
@@ -2743,6 +2744,8 @@ def write_partial_gpg_packet_chunks(fwrite, packet_type, data, fread, buflog2cap
     raise ValueError('Invalid GPG partial packet type: %d' % packet_type)
   if buflog2cap > 30:  # The GPG file format doesn't support more.
     raise ValueError('buflog2cap must be at most 30, got: %d' % buflog2cap)
+  if buflog2cap < 9:  # The GPG file format doesn't support less for the first partial packet.
+    raise ValueError('buflog2cap must be at least 9, got: %d' % buflog2cap)
   bufsize = 1 << buflog2cap
   if len(data) > bufsize:
     raise ValueError('Initial partial data too long.')
@@ -2777,8 +2780,11 @@ def write_partial_gpg_packet_chunks(fwrite, packet_type, data, fread, buflog2cap
     fwrite(data)
 
 
+# Default values mostly same as of GPG 1.x, GPG <2.1 (checked 1.0.6 and 1.4.18).
 def get_encrypt_symmetric_gpg_params(
-    passphrase, is_slow_cipher=False, is_slow_hash=False, cipher='cast5', hash='sha1', compress='zip', compress_level=6, s2k_mode=3, s2k_count=65536, salt=None, do_mdc=True, do_ascii_armor=False, buflog2cap=13,
+    passphrase, is_slow_cipher=False, is_slow_hash=False, cipher='cast5', hash='sha1', compress='zip', compress_level=6, s2k_mode=3, s2k_count=65536, salt=None,
+    do_mdc=True,  # No fixed default, let's play it safe with True.
+    do_ascii_armor=False, buflog2cap=13,
     plain_filename='', mtime=0, literal_type='b'):
   _pack = struct.pack
   do_mdc = bool(do_mdc)
@@ -2861,6 +2867,8 @@ def get_encrypt_symmetric_gpg_params(
   if buflog2cap > 30:
     # The new-format packet header doesn't support more than 30.
     raise ValueError('buglog2cap must be at most 30, got: %d' % buflog2cap)
+  if buflog2cap < 9:  # The GPG file format doesn't support less for the first partial packet.
+    raise ValueError('buflog2cap must be at least 9, got: %d' % buflog2cap)
   if len(plain_filename) > 255:
     raise ValueError('plain_filename too long, must be at most 255 bytes, got: %d' % len(plain_filename))
   if not literal_type or literal_type not in LITERAL_TYPES:
@@ -3269,61 +3277,90 @@ def GpgSymmetricFile(filename, mode, *args, **kwargs):
 # --- Command-line parsing and main().
 
 
+def usage():
+    sys.stderr.write(
+        'tinygpgs: symmetric key encryption tool compatible with GPG\n'
+        'This is free software, GNU GPL >=2.0. '
+        'There is NO WARRANTY. Use at your risk.\n'
+        'Encryption usage: %s -c [<flag> ...] <FILE.bin >FILE.bin.gpg\n'
+        'Decryption usage: %s -d [<flag> ...] <FILE.bin.gpg >FILE.bin\n' %
+        (argv[0], argv[0]))
+    sys.exit(1)
+
+
 def main(argv):
+  if len(argv) < 2 or argv[1] == '--help':
+    usage()
   argv = list(argv)
   is_slow_cipher = is_slow_hash = is_file_class = False
+  bufcap = 8192
+  encrypt_params = {}
   passphrase = lambda: prompt_passphrase(False)
-  if len(argv) > 1 and argv[1] == '--decrypt':
-    argv[1] = '-d'
-  elif len(argv) > 1 and argv[1] == '--symmetric':
-    argv[1] = '-c'
-  if len(argv) > 3 and argv[1] in ('-c', '-d') and argv[2] == '--pinentry-mode' and argv[3] == 'loopback':
-    del argv[2 : 4]
-  if len(argv) > 2 and argv[1] in ('-c', '-d') and argv[2] == '--slow-cipher':  # Not gpg(1).
-    is_slow_cipher = True
-    del argv[2]
-  if len(argv) > 2 and argv[1] in ('-c', '-d') and argv[2] == '--slow-hash':  # Not gpg(1).
-    is_slow_hash = True
-    del argv[2]
-  if len(argv) > 2 and argv[1] in ('-c', '-d') and argv[2] == '--file-class':  # Not gpg(1).
-    is_file_class = True
-    del argv[2]
-  if len(argv) == 3 and argv[1] in ('-c', '-d'):
-    passphrase = argv.pop(2)
-  if not (len(argv) == 2 and argv[1] != ('-c', '-d')):
-    sys.stderr.write(
-        'tinygpgs: decrypt symmetric encrypted GPG files\n'
-        'usage: %s -d <INPUT.BIN.GPG >INPUT.BIN\n' % argv[0])
-    sys.exit(1)
+  if argv[1] in ('-c', '--symmetric'):  # Like gpg(1).
+    command = 'encrypt'
+  elif argv[1] in ('-d', '--decrypt'):  # Like gpg(1).
+    command = 'decrypt'
+  elif argv[1] in ('-e', '--encrypt', '-s', '--sign'):  # Like gpg(1).
+    sys.exit('usage: public-key cryptography not supported: %s' % argv[1])
+  else:
+    usage()
+  i = 2
+  while i < len(argv):
+    arg = argv[i]
+    if arg == '-' or not arg.startswith('-'):
+      break
+    i += 1
+    if arg == '--':
+      break
+    elif arg == '--pinentry-mode' and i < len(argv):  # gpg(1).
+      if argv[i] != 'loopback':
+        sys.exit('usage: invalid flag value for --pinentry-mode: ' + argv[i])
+      i += 1
+    elif arg == '--slow-cipher':
+      is_slow_cipher = True
+    elif arg == '--slow-hash':
+      is_slow_hash = True
+    elif arg == '--file-class':
+      is_file_class = True
+    elif arg == '--passphrase' and i < len(argv):  # !! TODO(pts): Add more secure variants.
+      passphrase = argv[i]
+      i += 1
+    elif arg == '--bufcap' and i < len(argv) and command == 'encrypt':  # !! TODO(pts): Add more secure variants.
+      bufcap = int(argv[i])  # TODO(pts): Show nicer error if not int.
+      i += 1
+    else:
+      sys.exit('usage: unknown flag: ' + arg)
+  if i != len(argv):
+    sys.exit('usage: too many command-line arguments')
+  # !! Support filename and filename + '.gpg'.
   inf = sys.stdin
   set_fd_binary(inf.fileno())
   of = sys.stdout
   set_fd_binary(of.fileno())
-  if argv[1] == '-c':
+  if command == 'encrypt':
+    if bufcap < 1 or bufcap & (bufcap - 1):
+      sys.exit('usage: --bufcap value must be a power of 2, got: %d' % bufcap)
+    buflog2cap = 1
+    while bufcap > (1 << buflog2cap):
+      buflog2cap +=1
+    assert bufcap == 1 << buflog2cap  # Just to make sure.
+    if buflog2cap > 30:
+      sys.exit('usage: --bufcap value too large, must be at most %d, got: %d' % (1 << 30, bufcap))
+    if buflog2cap < 9:
+      # Some ciphers need >= 16, GPG partial packets need at least 512.
+      sys.exit('usage: --bufcap value too small, must be at least %d, got: %d' % (1 << 9, bufcap))
+    encrypt_params['buflog2cap'] = buflog2cap
+    encrypt_params['passphrase'] = passphrase
+    encrypt_params['is_slow_cipher'] = is_slow_cipher
+    encrypt_params['is_slow_hash'] = is_slow_hash
     # Defaults in GPG <2.1, including 1.4.18.
-    # !! Add command-line flags.
-    # !! document encryptedfile and other Python modules.
-    #cipher = 'cast5'
-    cipher = 'aes-256'
-    hash = 'sha1'
-    compress = 'zip'
-    #compress = 'none'
-    compress_level = 6  # For benchmarks, same as default gpg --compress-level=6.
-    #compress_level = 9  # Maximum.
-    s2k_mode = 3
-    s2k_count = 65536
-    do_ascii_armor = False
-    salt = None
-    do_mdc = True  # !! What is the gpg(1) default? No fixed default, let's play it safe with True.
-    #do_mdc = False
-    buflog2cap = 13  # 1 << 13 == 8192.
-    mtime = 0
-    plain_filename = 'MyFile'
-    literal_type = 'b'
-    args = (passphrase, is_slow_cipher, is_slow_hash, cipher, hash, compress, compress_level, s2k_mode, s2k_count, salt, do_mdc, do_ascii_armor, buflog2cap, plain_filename, mtime, literal_type)
-    bufcap = 1 << buflog2cap
+    # !! Add more command-line flags, of encrypt_symmetric_gpg.
+    #encrypt_params.setdefault('cipher', 'sha256')
+    #encrypt_params.setdefault('compress', 'none')
+    #encrypt_params.setdefault('compress_level', 9)
+    #encrypt_params.setdefault('do_mdc', False)
     if is_file_class:
-      f = GpgSymmetricFileWriter(of.write, 'wb', *args)
+      f = GpgSymmetricFileWriter(of.write, 'wb', **encrypt_params)
       try:
         while 1:
           data = inf.read(bufcap)
@@ -3333,9 +3370,8 @@ def main(argv):
       finally:
         f.close()
     else:
-      encrypt_symmetric_gpg(inf.read, of, *args)
-  elif argv[1] == '-d':
-    bufcap = 8192
+      encrypt_symmetric_gpg(inf.read, of, **encrypt_params)
+  elif command == 'decrypt':
     try:
       if is_file_class:
         f = GpgSymmetricFileReader(inf.read, 'rb', passphrase, is_slow_cipher, is_slow_hash)
