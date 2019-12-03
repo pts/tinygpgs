@@ -3115,7 +3115,7 @@ class GpgSymmetricFileWriter(object):
                '_qhc', '_cpre', '_bs', '_ze', '_ze_compress', '_mdc_obj',
                '_mdc_update', '_cfb_encrypt', '_packet_type', '_packet_header',
                '_packet_hc', '_ciphp', '_bufcap', '_abuf', '_asize', '_acrc',
-               '_b2a')
+               '_b2a', '_psizec')
 
   def __init__(self, filename, mode, *args, **kwargs):
     """Also pass passphrase=... You can pass .write method as filename."""
@@ -3155,6 +3155,7 @@ class GpgSymmetricFileWriter(object):
       self._fwrite(header)
       self._abuf, self._asize, self._acrc, self._b2a = (), 0, (), ()
     self._pbuf, self._psize, self._plitp = [literal_header], len(literal_header), True  # Plaintext buffer.
+    self._psizec = self._psize  # Canary used in .close() to detect a partial .write().
     self._qhc = struct.pack('>B', 224 | buflog2cap)
     self._qbuf, self._qsize = [first_plaintext_chunk], len(first_plaintext_chunk)
     self._flush_pbuf()
@@ -3167,10 +3168,16 @@ class GpgSymmetricFileWriter(object):
     65536 bytes). For maximum speed, use encrypt_symmetric_gpg instead.
     """
     if data:
+      self._psizec = psize = self._psize
+      self.count += len(data)
+      # If a KeyboardInterrupt happens between now and setting of
+      # self._psizec below, then `self._psize == self._psizec' will be fals
+      # in self.close().
+      self._psize = psize + len(data)
       self._pbuf.append(data)
-      self._psize += len(data)
       if self._psize > self._bufcap:
         self._flush_pbuf()
+      self._psizec = self._psize
 
   def flush(self):
     # There is no way to flush the encryption buffer, partial packets have a
@@ -3181,11 +3188,8 @@ class GpgSymmetricFileWriter(object):
   def close(self):
     """Closes the file, flushing all data."""
     # .close() is not suitable as __del__, it refers to global variables.
-    # !! At KeyboardInterrupt, the previous flush gets interrupted, leaving
-    #    the object in inconsistent state, and then this .close() will fail variously.
-    #    Add self._is_writing = True to .write.
     try:
-      if self._pbuf is not ():
+      if self._psize == self._psizec:
         self._done_pbuf()
     finally:
       self._fwrite = ()
@@ -3200,6 +3204,7 @@ class GpgSymmetricFileWriter(object):
       self._plitp = self._qhc = self._packet_header = None
 
   def _done_pbuf(self, _pack=struct.pack):
+    self._psizec = ()  # Ruin the canary to prevent .close() from calling again.
     pbuf, psize = self._pbuf, self._psize
     if pbuf is ():
       raise ValueError('Duplicate call to _done_pbuf.')
