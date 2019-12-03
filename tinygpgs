@@ -3230,6 +3230,41 @@ class GpgSymmetricFileWriter(object):
     self._cpre = cpre[lcpb:]
 
 
+# --- Unified class API.
+
+
+def GpgSymmetricFile(filename, mode, *args, **kwargs):
+  """Returns file-like object for GPG encryption or decryption.
+
+  Example usage for GPG decryption:
+
+    import getpass
+    f = GpgSymmetricFile('FILE.bin.gpg', 'rb', getpass.getpass())
+    try:
+      print(f.read())  # Use f.read(8192) to limit memory usage.
+    finally:
+      f.close()
+
+  Example usage for GPG encryption:
+
+    import getpass
+    f = GpgSymmetricFile('FILE.bin.gpg', 'wb', getpass.getpass())
+    try:
+      f.write('Hello, World!\n')
+      f.write('This is the end.\n')
+    finally:
+      f.close()
+
+  See more info in the docstrings of GpgSymmetricFileReader and
+  GpgSymmetricFileWriter.
+  """
+  if 'r' in mode:
+    cons = GpgSymmetricFileReader
+  else:
+    cons = GpgSymmetricFileWriter
+  return cons(filename, mode, *args, **kwargs)
+
+
 # --- Command-line parsing and main().
 
 
