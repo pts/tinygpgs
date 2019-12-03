@@ -42,6 +42,9 @@ def prompt_passphrase(do_passphrase_twice):
   sys.stderr.flush()
   sys.stdout.flush()
   import getpass
+  # Unfortunately in Python 2.4 and 2.5, this raises a termios.error if
+  # stdin is redirected to a file. As a workaround, upgrade to Python >=2.6,
+  # or use `--passphrase ...'.
   passphrase = getpass.getpass('Enter passphrase: ')
   if not passphrase:
     raise SystemExit('empty passphrase')
