@@ -63,6 +63,22 @@ Dependencies:
 tinygpgs is free software, GNU GPL >=2.0. There is NO WARRANTY. Use at your
 risk.
 
+Default encryption settings:
+
+* (These settings are the same as GPG 1.0.6 (2001-06-01) ... 1.4.18, unless
+  otherwise noted. Also checked GPG 2.2.17 (2019-07-09).)
+* --cipher-algo cast5 (Changed in GPG 2.1 (2017-08-09) to aes-128 (according
+  to https://en.wikipedia.org/wiki/GNU_Privacy_Guard), and in GPG 2.2
+  (2017-09-19) to aes-256. tinygpgs doesn't reflect these changes.)
+* --digest-algo sha1
+* --s2k-count 65536 (Changed in GPG 2.1 to 3014656 and then to even higher
+  values. It makes dictionary attacks properotionally slower.
+  tinygpgs doesn't reflect this change.)
+* --compress-algo zip
+* --compress-level 6
+* --force-mdc (The default of GPG depends on other flags.)
+* --no-armor
+
 Tools for decrypting symmetric key GPG message
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 * gpg1: gpg -d <FILE.bin.gpg >FILE.bin
@@ -79,7 +95,8 @@ GPG symmetric key encryption steps
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 GPG (and OpenPGP) does the following for encryption:
 
-1. Generates a random 8-byte salt1 and a random salt2.
+1. Generates a random 8-byte salt1 and a random salt2 (of the same size as
+   the cipher block size).
 2. Computes the session key from the passphrase by computing a hash
    (typically SHA-1) of a (configurably) long repeat of the (salt1 +
    passphrase). This has similar purpose as of PBKDF2, but the actual

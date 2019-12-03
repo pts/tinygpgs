@@ -26,7 +26,6 @@ All ciphers and hashes defined in the OpenPGP RFC
 # !! Add tests for ciphers and hashes.
 # !! Add Python 3 support.
 # !! Add help and docs.
-# !! Add gpg(1) compatibility flags: --passphrase-repeat n, --passphrase-fd n, --passphrase-file file, --passphrase string.
 # !! Add warning if slow becaue of Python hash or cipher.
 # !! Document encryptedfile and other Python modules.
 # !! Add compatible class API with encryptedfile.
@@ -1925,9 +1924,6 @@ def get_gpg_cipher(cipher_algo, keytable, is_slow_cipher, cfb_iv=None):
   if KEYTABLE_SIZES[cipher_algo] != len(keytable):
     raise ValueError('Session key must be %d bytes for cipher_algo %s, got: %d' %
                      (KEYTABLE_SIZES[cipher_algo], CIPHER_ALGOS[cipher_algo], len(keytable)))
-  # !! move to doc: The cipher CAST5 and AES cover the GPG defaults between 1.0.6
-  # (2001-06-01) and 2.2.17 (2019-07-09); https://en.wikipedia.org/wiki/GNU_Privacy_Guard says that CAST5 has been the default
-  # cipher since the beginning (GPGP 0.9.x, 1999) until <2.1.
   cipher_cons, block_size = get_cipher_cons(CIPHER_ALGOS[cipher_algo], is_slow_cipher, cfb_iv)
   if cfb_iv:
     MODE_CFB = 3  # PyCrypto.
@@ -1963,6 +1959,11 @@ def get_gpg_s2k_string_to_key(keytable_size, salt, count, digest_func, passphras
   session_key = ''.join(session_key)[:keytable_size]
   assert len(session_key) == keytable_size
   return session_key
+
+
+def show_info(msg):
+  sys.stderr.write('info: %s\n' % (msg,))
+  sys.stderr.flush()  # Automatic, but play it safe.
 
 
 # --- GPG decryption.
@@ -2179,9 +2180,10 @@ def yield_gpg_packets(fread, has_ascii_armor_ary=None):
     yield packet
 
 
-def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash):
+def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash, show_info_func, do_show_session_key):
   # https://tools.ietf.org/html/rfc4880
-  # TODO(pts): Support the ASCII armor as well.
+  if not show_info_func:
+    show_info_func = lambda msg: 0
   is_prev_partial, has_ascii_armor_ary = False, []
   cipher_algo = session_key = None
   iter_packets = yield_gpg_packets(fread, has_ascii_armor_ary)
@@ -2215,10 +2217,10 @@ def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash):
       count = (16 + (b & 15)) << ((b >> 4) + 6)
     else:
       count = 0
-  print >>sys.stderr, 'info: GPG symmetric cipher_algo=%s s2k_mode=%s digest_algo=%s count=%d len(salt)=%d len(encrypted_session_key)=%d has_ascii_armor=%d' % (
-      CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), S2K_MODES.get(s2k_mode, s2k_mode), DIGEST_ALGOS.get(digest_algo, digest_algo), count, len(salt), len(data) - i, int(has_ascii_armor_ary[0]))
-  #print >>sys.stderr, 'SKESK cipher_algo=%s s2k_mode=%s digest_algo=%s count=%d salt=%r encrypted_session_key=%r' % (
-  #    CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), S2K_MODES.get(s2k_mode, s2k_mode), DIGEST_ALGOS.get(digest_algo, digest_algo), count, salt, data[i:])
+  show_info_func('GPG symmetric cipher_algo=%s s2k_mode=%s digest_algo=%s count=%d len(salt)=%d len(encrypted_session_key)=%d has_ascii_armor=%d' %
+                 (CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), S2K_MODES.get(s2k_mode, s2k_mode), DIGEST_ALGOS.get(digest_algo, digest_algo), count, len(salt), len(data) - i, int(has_ascii_armor_ary[0])))
+  if do_show_session_key:
+    show_info_func('GPG symmetric encrypted_session_key=%r' % ':'.join((str(cipher_algo), data[i:].encode('hex').upper())))
   if cipher_algo not in CIPHER_ALGOS:
     raise ValueError('Unknown SKESK cipher_algo: %d' % cipher_algo)
   if s2k_mode not in S2K_MODES:
@@ -2226,7 +2228,7 @@ def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash):
   if digest_algo not in DIGEST_ALGOS:
     raise ValueError('Unknown SKESK digest_algo: %d' % digest_algo)
   digest_func = lambda data='': new_hash(DIGEST_ALGOS[digest_algo], data, is_slow_hash)
-  print >>sys.stderr, 'info: GPG symmetric is_py_digest=%d' % int(type(getattr(digest_func().update, 'im_func', None)) == type(lambda: 0))
+  show_info_func('GPG symmetric is_py_digest=%d' % int(type(getattr(digest_func().update, 'im_func', None)) == type(lambda: 0)))
   keytable_size = KEYTABLE_SIZES[cipher_algo]
   for packet_type, is_partial, data2 in iter_packets:
     break
@@ -2249,13 +2251,14 @@ def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash):
 
   if callable(passphrase):
     passphrase = passphrase()
-  session_key = get_gpg_s2k_string_to_key(keytable_size, salt, count, digest_func, passphrase)  # Slow.
-  del passphrase, keytable_size, salt, digest_func
   # Correct, same as:
   # gpg --list-packets -vvvvv --show-session-key --pinentry-mode loopback hellow4.bin.gpg
-  #print >>sys.stderr, 'info: SKESK session_key=%r' % (session_key.encode('hex').upper(),)
+  session_key = get_gpg_s2k_string_to_key(keytable_size, salt, count, digest_func, passphrase)  # Slow.
+  del passphrase, keytable_size, salt, digest_func
 
   if len(data) > i:  # Encrypted session key.
+    if do_show_session_key:
+      show_info_func('GPG symmetric derived_session_key_key=%r' % ':'.join((str(cipher_algo), session_key.encode('hex').upper())))
     if s2k_mode == 0:
       raise ValueError('Encrypted session key needs salt.')
     codebook, bs = get_gpg_cipher(cipher_algo, session_key, is_slow_cipher)
@@ -2280,6 +2283,9 @@ def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash):
     if len(session_key) != KEYTABLE_SIZES[cipher_algo]:
       raise ValueError('Encrypted session key size must be %d for cipher_algo %s, got: %d' %
                        (KEYTABLE_SIZES[cipher_algo], CIPHER_ALGOS[cipher_algo], len(session_key)))
+  if do_show_session_key:
+    # Showing it with the same display style as gpg(1).
+    show_info_func('GPG symmetric session_key=%r' % ':'.join((str(cipher_algo), session_key.encode('hex').upper())))
 
   def yield_data_chunks():
     if data_ary:
@@ -2296,7 +2302,7 @@ def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash):
     if not is_done:
       raise ValueError('Last packet must be a non-partial packet.')
 
-  return cipher_algo, session_key, has_mdc, iter_to_fread(yield_data_chunks())
+  return cipher_algo, session_key, has_mdc, iter_to_fread(yield_data_chunks()), show_info_func
 
 
 def get_yield_decompress_chunks(zd):
@@ -2320,19 +2326,25 @@ class BadPassphraseError(ValueError):
 
 
 def get_decrypt_symmetric_gpg_literal_packet_reader(
-    fread, passphrase, is_slow_cipher=False, is_slow_hash=False):
+    fread,
+    passphrase,  # This is the first argument, order of others can change.
+    is_slow_cipher=False, is_slow_hash=False,
+    show_info_func=None, do_show_session_key=False):
   # Don't add more arguments above, this function is used in
   # GpgSymmetricFileReader.
   _buffer = buffer
-  cipher_algo, session_key, has_mdc, fread = open_symmetric_gpg(
-      fread, passphrase, is_slow_cipher, is_slow_hash)
+  cipher_algo, session_key, has_mdc, fread, show_info_func = open_symmetric_gpg(
+      fread, passphrase, is_slow_cipher, is_slow_hash, show_info_func,
+      do_show_session_key)
   del passphrase
-  print >>sys.stderr, 'info: GPG symmetric session has_mdc=%d cipher_algo=%s len(session_key)=%d' % (
-      int(has_mdc), CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), len(session_key))
+  show_info_func(
+      'GPG symmetric session has_mdc=%d cipher_algo=%s len(session_key)=%d' %
+      (int(has_mdc), CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), len(session_key)))
   #print (cipher_algo, session_key, has_mdc)
   strxor_2 = make_strxor(2)
   codebook, bs = get_gpg_cipher(cipher_algo, session_key, is_slow_cipher)
-  print >>sys.stderr, 'info: GPG symmetric is_py_cipher=%d' % int(type(getattr(codebook.encrypt, 'im_func', None)) == type(lambda: 0))
+  show_info_func('GPG symmetric is_py_cipher=%d' %
+                 (int(type(getattr(codebook.encrypt, 'im_func', None)) == type(lambda: 0)),))
   strxor_bs = make_strxor(bs)  # For cipher_algo block size.
   encrypt_func = codebook.encrypt
   fre = encrypt_func('\0' * bs)
@@ -2384,8 +2396,8 @@ def get_decrypt_symmetric_gpg_literal_packet_reader(
     else:
       raise BadPassphraseError('Bad passphrase (bad packet type).')
     compress_algo = 0  # Uncompressed.
-  print >>sys.stderr, 'info: GPG symmetric compress_algo=%s' % (
-      COMPRESS_ALGOS.get(compress_algo, compress_algo))
+  show_info_func('GPG symmetric compress_algo=%s' %
+                 (COMPRESS_ALGOS.get(compress_algo, compress_algo),))
   zd = zd_decompress = None
   if compress_algo == 0:
     pass  # Uncompressed.
@@ -2427,6 +2439,7 @@ def get_decrypt_symmetric_gpg_literal_packet_reader(
       else:
         yield data1
     _fast_strxor = fast_strxor
+    # !!! Fix .im_func etc.
     if _fast_strxor and type(encrypt_func) is type(lambda: 0):  # Not fast C extension.
       _fast_strxor = None
     if len(data) == bs:
@@ -2451,7 +2464,6 @@ def get_decrypt_symmetric_gpg_literal_packet_reader(
           #
           # Typical lbs is 8192 bytes (for 8192-byte packets).
           # For hellow3.bin.gpg, lbs is 384 bytes.
-          #print >>sys.stderr, 'fast', lbs
           if mdc_queue:  # Flush mdc_queue before critical path.
             mdc_obj.update(mdc_queue)
             if zdml:
@@ -2484,7 +2496,6 @@ def get_decrypt_symmetric_gpg_literal_packet_reader(
           if mdc_obj:  # Fill mdc_queue again.
             mdc_queue = datad[lbs - bsmdc : lbs]
         else:  # This branch happens only with empty*.bin.gpg, not even hellow*.bin.gpg.
-          #print >>sys.stderr, 'SLOW', bs
           fre, data = encrypt_func(data), data2
           data1 = strxor_bs(data, fre)
           if mdc_obj:
@@ -2656,7 +2667,8 @@ class GpgSymmetricFileReader(object):
       fread = f.read
     fread = get_decrypt_symmetric_gpg_literal_packet_reader(
         fread, *args, **kwargs)
-    # !! TODO(pts): Add has_mdc, cipher_algo etc. and other parameters to self.
+    # TODO(pts): Add has_mdc, cipher_algo etc. and other parameters to self,
+    # make them available for inspection. Also in *FileWriter.
     it = yield_gpg_literal_data_chunks(fread)
     if it.next():  # Wait for successful init.
       raise ValueError('Expected empty init string.')
@@ -2789,10 +2801,12 @@ def write_partial_gpg_packet_chunks(fwrite, packet_type, data, fread, buflog2cap
 
 # Default values mostly same as of GPG 1.x, GPG <2.1 (checked 1.0.6 and 1.4.18).
 def get_encrypt_symmetric_gpg_params(
-    passphrase,  # This is the first arguments, order of others can change.
-    is_slow_cipher=False, is_slow_hash=False, cipher='cast5', hash='sha1', compress='zip', compress_level=6, s2k_mode=3, s2k_count=65536, salt=None,
-    do_mdc=True,  # No fixed default, let's play it safe with True.
-    buflog2cap=13, plain_filename='', mtime=0, literal_type='b', do_add_ascii_armor=False):
+    passphrase,  # This is the first argument, order of others can change.
+    is_slow_cipher=False, is_slow_hash=False, cipher='cast5', s2k_digest='sha1', compress='zip', compress_level=6, s2k_mode=3, s2k_count=65536, salt=None,
+    do_mdc=True,  # No fixed default in gpg(1), let's play it safe with True.
+    buflog2cap=13, plain_filename='', mtime=0, literal_type='b', do_add_ascii_armor=False, show_info_func=None, do_show_session_key=False):
+  if not show_info_func:
+    show_info_func = lambda msg: 0
   _pack = struct.pack
   do_mdc = bool(do_mdc)
   cipher = cipher.lower()
@@ -2801,12 +2815,12 @@ def get_encrypt_symmetric_gpg_params(
       break
   else:
     raise ValueError('Unknown GPG cipher: %s' % cipher)
-  hash = hash.replace('-', '').lower()
-  for digest_algo, hash2 in sorted(DIGEST_ALGOS.iteritems()):
-    if hash2 == hash:
+  s2k_digest = s2k_digest.replace('-', '').lower()
+  for digest_algo, s2k_digest2 in sorted(DIGEST_ALGOS.iteritems()):
+    if s2k_digest2 == s2k_digest:
       break
   else:
-    raise ValueError('Unknown GPG digest (for s2k): %s' % hash)
+    raise ValueError('Unknown GPG digest (for s2k): %s' % s2k_digest)
   compress = compress.lower()
   if compress == 'none':
     compress_algo = 0
@@ -2844,7 +2858,7 @@ def get_encrypt_symmetric_gpg_params(
     ze = bz2.BZ2Compressor(compress_level)
   else:
     raise ValueError('Unknown compress_algo: %d' % compress_algo)
-  digest_func = lambda data='': new_hash(hash, data, is_slow_hash)
+  digest_func = lambda data='': new_hash(s2k_digest, data, is_slow_hash)
   keytable_size = KEYTABLE_SIZES[cipher_algo]
   codebook0, bs = get_gpg_cipher(cipher_algo, '\0' * keytable_size, is_slow_cipher)
   plaintext_salt = get_random_bytes_default(bs)
@@ -2859,12 +2873,6 @@ def get_encrypt_symmetric_gpg_params(
         if diff2 < bestdiff:
           bestb, bestdiff, bestcount = b, diff2, count2
       count = bestcount  # Nearest count.
-  # !! Print compress_algo and compress_level below.
-  print >>sys.stderr, 'info: GPG symmetric encrypt cipher_algo=%s is_py_cipher=%d s2k_mode=%s digest_algo=%s is_py_digest=%d count=%d len(salt)=%d len(encrypted_session_key)=0 do_mdc=%d len(session_key)=%d' % (
-      CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), int(type(getattr(codebook0.encrypt, 'im_func', None)) == type(lambda: 0)),
-      S2K_MODES.get(s2k_mode, s2k_mode),
-      DIGEST_ALGOS.get(digest_algo, digest_algo), int(type(getattr(digest_func().update, 'im_func', None)) == type(lambda: 0)),
-      count, len(salt), int(do_mdc), keytable_size)
   if buflog2cap < 1:
     buflog2cap = 0
   while bs > (1 << buflog2cap):
@@ -2872,6 +2880,19 @@ def get_encrypt_symmetric_gpg_params(
   if buflog2cap > 30:
     # The new-format packet header doesn't support more than 30.
     raise ValueError('buglog2cap must be at most 30, got: %d' % buflog2cap)
+  if show_info_func:
+    show_info_func(
+        'GPG symmetric encrypt cipher_algo=%s(%d) is_py_cipher=%d s2k_mode=%s(%d) s2k_digest_algo=%s(%d) is_py_hash=%d '
+        's2k_count=%d len(s2k_salt)=%d compress_algo=%s(%d) compress_level=%d len(encrypted_session_key)=%d do_mdc=%d '
+        'len(session_key)=%d bufcap=%d literal_type=%r plain_filename=%r mtime=%d do_add_ascii_armor=%d' %
+        (CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), cipher_algo,
+         int(type(getattr(codebook0.encrypt, 'im_func', None)) == type(lambda: 0)),
+         S2K_MODES.get(s2k_mode, s2k_mode), s2k_mode,
+         DIGEST_ALGOS.get(digest_algo, digest_algo), digest_algo,
+         int(type(getattr(digest_func().update, 'im_func', None)) == type(lambda: 0)),
+         count, len(salt),
+         COMPRESS_ALGOS.get(compress_algo, compress_algo), compress_algo, compress_level,
+         0, int(do_mdc), keytable_size, 1 << buflog2cap, literal_type, plain_filename, mtime, int(bool(do_add_ascii_armor))))
   if buflog2cap < 9:  # The GPG file format doesn't support less for the first partial packet.
     raise ValueError('buflog2cap must be at least 9, got: %d' % buflog2cap)
   if len(plain_filename) > 255:
@@ -2879,8 +2900,10 @@ def get_encrypt_symmetric_gpg_params(
   if not literal_type or literal_type not in LITERAL_TYPES:
     raise ValueError('Bad literal type: %r' % literal_type)
   if callable(passphrase):
-    passphrase = passphrase()  # !! Configure to ask it twice.
+    passphrase = passphrase()
   session_key = get_gpg_s2k_string_to_key(keytable_size, salt, count, digest_func, passphrase)  # Slow.
+  if do_show_session_key and show_info_func:
+    show_info_func('GPG symmetric encrypt session_key=%r' % ':'.join((str(cipher_algo), session_key.encode('hex').upper())))
   codebook, bs = get_gpg_cipher(cipher_algo, session_key, is_slow_cipher)
   try:
     cfb_encrypt = get_gpg_cipher(cipher_algo, session_key, is_slow_cipher, '\0' * bs)[0].encrypt
@@ -3099,8 +3122,6 @@ class GpgSymmetricFileWriter(object):
   key encryption (passphrase, secret key), conforming to the OpenPGP file
   format (RFC 4880), and gpg(1) (and probably pgp(1)) will be able to
   decrypt it.
-
-  !! doc: Default settings, GPG version compatibility (1.0.6).
 
   GpgSymmetricFileWriter doesn't support public-key encryption or public-key
   signing (with the private key).
@@ -3388,89 +3409,144 @@ def GpgSymmetricFile(filename, mode, *args, **kwargs):
 # --- Command-line parsing and main().
 
 
-def usage():
+def usage(argv0):
     sys.stderr.write(
         'tinygpgs: symmetric key encryption tool compatible with GPG\n'
         'This is free software, GNU GPL >=2.0. '
         'There is NO WARRANTY. Use at your risk.\n'
         'Encryption usage: %s -c [<flag> ...] <FILE.bin >FILE.bin.gpg\n'
         'Decryption usage: %s -d [<flag> ...] <FILE.bin.gpg >FILE.bin\n' %
-        (argv[0], argv[0]))
+        (argv0, argv0))
     sys.exit(1)
+
+
+def get_flag_arg(argv, i):
+  if i >= len(argv):
+    sys.exit('usage: missing argument for flag: ' + argv[i - 1])
+  return argv[i]
+
+
+def get_flag_arg_int(argv, i):
+  value = get_flag_arg(argv, i)
+  try:
+    return int(value)
+  except ValueError:
+    # TODO(pts): Check for positive value etc.
+    sys.exit('usage: flag value must be an integer: %s %s' % (argv[i - 1], argv[i]))
 
 
 def main(argv):
   if len(argv) < 2 or argv[1] == '--help':
-    usage()
+    usage(argv[0])
   argv = list(argv)
-  is_slow_cipher = is_slow_hash = is_file_class = False
+  is_file_class = False
   bufcap = 8192
+  params = {}
+  params['passphrase'] = lambda: prompt_passphrase(False)
+  params['show_info_func'] = show_info
   encrypt_params = {}
-  passphrase = lambda: prompt_passphrase(False)
   if argv[1] in ('-c', '--symmetric'):  # Like gpg(1).
     do_encrypt = True
   elif argv[1] in ('-d', '--decrypt'):  # Like gpg(1).
     do_encrypt = False
-  elif argv[1] in ('-e', '--encrypt', '-s', '--sign'):  # Like gpg(1).
+  elif argv[1] in ('-e', '--encrypt', '-s', '--sign', '--verify'):  # Like gpg(1).
     sys.exit('usage: public-key cryptography not supported: %s' % argv[1])
   else:
-    usage()
+    usage(argv[0])
   i = 2
   while i < len(argv):
     arg = argv[i]
     if arg == '-' or not arg.startswith('-'):
       break
     i += 1
+    is_yes = not arg.startswith('--no-')
     if arg == '--':
       break
-    elif arg == '--pinentry-mode' and i < len(argv):  # gpg(1).
-      if argv[i] != 'loopback':
+    elif arg == '--pinentry-mode':  # gpg(1).
+      if get_flag_arg(argv, i) != 'loopback':
         sys.exit('usage: invalid flag value for --pinentry-mode: ' + argv[i])
       i += 1
-    elif arg == '--slow-cipher':
-      is_slow_cipher = True
-    elif arg == '--slow-hash':
-      is_slow_hash = True
-    elif arg == '--file-class':
-      is_file_class = True
-    elif arg == '--passphrase' and i < len(argv):  # gpg(1).
-      passphrase = argv[i]  # !! TODO(pts): Add more secure variants.
+    elif arg in ('--slow-cipher', '--no-slow-cipher'):
+      params['is_slow_cipher'] = is_yes
+    elif arg == ('--slow-hash', '--no-slow-hash'):
+      params['is_slow_hash'] = is_yes
+    elif arg in ('--file-class', '--no-file-class'):
+      is_file_class = is_yes
+    elif arg in ('--show-info', '--no-show-info'):
+      params['show_info_func'] = is_yes and show_info
+    elif arg in ('--show-session-key', '--no-show-session-key'):  # gpg(1).
+      params['do_show_session_key'] = is_yes
+    elif arg == '--passphrase':  # gpg(1).
+      # !! Add gpg(1)-compatible more secure variants: --passphrase-repeat n, --passphrase-fd n, --passphrase-file file.
+      params['passphrase'] = get_flag_arg(argv, i)
       i += 1
-    elif arg == '--bufcap' and i < len(argv):
-      bufcap = int(argv[i])  # TODO(pts): Show nicer error on bad int.
+    elif arg == '--bufcap':
+      bufcap = get_flag_arg_int(argv, i)
       i += 1
-    elif arg in ('-a', '--armor') and do_encrypt:  # gpg(1).
-      encrypt_params['do_add_ascii_armor'] = True
-    elif arg == '--no-armor' and do_encrypt:  # gpg(1).
-      encrypt_params['do_add_ascii_armor'] = False
+    elif do_encrypt and arg == '--cipher-algo':  # gpg(1).
+      encrypt_params['cipher'] = get_flag_arg(argv, i)
+      i += 1
+    elif do_encrypt and arg in ('--digest-algo', '--s2k-digest-algo'):  # gpg(1).
+      encrypt_params['s2k_digest'] = get_flag_arg(argv, i)
+      i += 1
+    elif do_encrypt and arg == '--compress-algo':  # gpg(10>
+      encrypt_params['compress'] = get_flag_arg(argv, i)
+      i += 1
+    elif do_encrypt and arg in ('-a', '--armor', '--no-armor'):  # gpg(1).
+      encrypt_params['do_add_ascii_armor'] = is_yes
+    elif do_encrypt and arg in ('-z', '--compress-level'):  # gpg(1).
+      encrypt_params['compress_level'] = get_flag_arg_int(argv, i)
+      i += 1
+    elif do_encrypt and arg == '--bzip2-compress-level':  # gpg(1).
+      encrypt_params['bzip2_compress_level'] = get_flag_arg_int(argv, i)
+      i += 1
+    elif do_encrypt and arg == '--s2k-mode':  # gpg(1).
+      encrypt_params['s2k_mode'] = get_flag_arg_int(argv, i)
+      i += 1
+    elif do_encrypt and arg == '--s2k-count':  # gpg(1).
+      encrypt_params['s2k_count'] = get_flag_arg_int(argv, i)
+      i += 1
+    elif do_encrypt and arg == '--force-mdc':  # gpg(1).
+      encrypt_params['do_mdc'] = True
+    elif do_encrypt and arg == '--disable-mdc':  # gpg(1).
+      encrypt_params['do_mdc'] = False
+    elif do_encrypt and arg == '--plain-filename':
+      encrypt_params['plain_filename'] = get_flag_arg(argv, i)
+      i += 1
+    elif do_encrypt and arg == '--literal-type':
+      encrypt_params['literal_type'] = get_flag_arg(argv, i)
+      i += 1
+    elif do_encrypt and arg == 'mtime':
+      encrypt_params['mtime'] = get_flag_arg_int(argv, i)
       i += 1
     else:
       sys.exit('usage: unknown flag: ' + arg)
   if i != len(argv):
     sys.exit('usage: too many command-line arguments')
   # !! Support filename and filename + '.gpg'.
+  if bufcap < 1 or bufcap & (bufcap - 1):
+    sys.exit('usage: --bufcap value must be a power of 2, got: %d' % bufcap)
+  buflog2cap = 1
+  while bufcap > (1 << buflog2cap):
+    buflog2cap +=1
+  assert bufcap == 1 << buflog2cap  # Just to make sure.
+  if buflog2cap > 30:
+    sys.exit('usage: --bufcap value too large, must be at most %d, got: %d' % (1 << 30, bufcap))
+  if buflog2cap < 9:
+    # Some ciphers need >= 16, GPG partial packets need at least 512.
+    sys.exit('usage: --bufcap value too small, must be at least %d, got: %d' % (1 << 9, bufcap))
+
   inf = sys.stdin
   set_fd_binary(inf.fileno())
   of = sys.stdout
   set_fd_binary(of.fileno())
   if do_encrypt:
-    if bufcap < 1 or bufcap & (bufcap - 1):
-      sys.exit('usage: --bufcap value must be a power of 2, got: %d' % bufcap)
-    buflog2cap = 1
-    while bufcap > (1 << buflog2cap):
-      buflog2cap +=1
-    assert bufcap == 1 << buflog2cap  # Just to make sure.
-    if buflog2cap > 30:
-      sys.exit('usage: --bufcap value too large, must be at most %d, got: %d' % (1 << 30, bufcap))
-    if buflog2cap < 9:
-      # Some ciphers need >= 16, GPG partial packets need at least 512.
-      sys.exit('usage: --bufcap value too small, must be at least %d, got: %d' % (1 << 9, bufcap))
+    encrypt_params.update(params)  # Shouldn't have common fields.
     encrypt_params['buflog2cap'] = buflog2cap
-    encrypt_params['passphrase'] = passphrase
-    encrypt_params['is_slow_cipher'] = is_slow_cipher
-    encrypt_params['is_slow_hash'] = is_slow_hash
+    if ('bzip2_compress_level' in encrypt_params and
+        encrypt_params.get('compress', '').lower() == 'bzip2'):
+      encrypt_params['compress_level'] = encrypt_params.pop('bzip2_compress_level')
     # Defaults in GPG <2.1, including 1.4.18.
-    # !! Add more command-line flags, of encrypt_symmetric_gpg.
     #encrypt_params.setdefault('cipher', 'sha256')
     #encrypt_params.setdefault('compress', 'none')
     #encrypt_params.setdefault('compress_level', 9)
@@ -3490,9 +3566,9 @@ def main(argv):
   else:
     try:
       if is_file_class:
-        f = GpgSymmetricFileReader(inf.read, 'rb', passphrase, is_slow_cipher, is_slow_hash)
+        f = GpgSymmetricFileReader(inf.read, 'rb', **params)
         try:
-          #of.write(f.read()); return
+          #of.write(f.read()); return  # Works but uses much memory.
           while 1:
             data = f.read(bufcap)
             if not data:
@@ -3501,7 +3577,7 @@ def main(argv):
         finally:
           f.close()
       else:
-        decrypt_symmetric_gpg(inf.read, of, passphrase, is_slow_cipher, is_slow_hash)
+        decrypt_symmetric_gpg(inf.read, of, **params)
     except BadPassphraseError, e:
       msg = str(e)
       sys.stderr.write('fatal: %s%s\n' % (msg[0].lower(), msg[1:].rstrip('.')))
