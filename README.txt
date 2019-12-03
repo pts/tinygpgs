@@ -71,6 +71,12 @@ MODE_ECB, it's <1.37 times slower than GPG. The large strxor trick could
 make it just <1.21 times slower, but its output is incorrect: we need many
 calls to strxor in a feedback for MODE_ECB encryption.
 
+There is a class API (GpgSymmetricFile*), which is a <1.11 times slower than
+the function-based API (used for the command-line as well) for decryption,
+and about the same speed for encryption. Both APIs have the same, very small
+memory usage. They share about half of their code. In the benchmarks, the
+function-based API is measured, unless otherwise indicated.
+
 Benchmarks
 ~~~~~~~~~~
 Encrypted input file (hellow5long.bin.gpg) parameters:
@@ -97,12 +103,17 @@ Debian 9.4:
   $ time python2.7 tinygpgs -d abc <hellow5long.bin.gpg >hellow5long.out
   3.980s user
 
+  With standard OpenSSL hashlib + PyCrypto, using the GpgSymmetricFileReader
+  file class API.
+  $ time python2.7 tinygpgs -d abc <hellow5long.bin.gpg >hellow5long.out
+  4.388s user
+
   Old, slow tinygpgs, before the commit ``added speedup for the critical,
   common decryption path'':
   $ time python2.7 tinygpgs -d abc <hellow5long.bin.gpg >hellow5long.out
   109.692s user
 
-  pgpy:
+  pgpy: This is very slow.
   $ python -c 'import getpass, sys, pgpy; sys.stdout.write(pgpy.PGPMessage.from_file(sys.argv[1]).decrypt(getpass.getpass("Enter passphrase: ")).message)' hellow5long.bin.gpg >hellow5long.out
   282.272s
   Also it keeps the entire input and output files in memory, using more than
@@ -111,25 +122,25 @@ Debian 9.4:
 Encryption (and compression) benchmark measurements on Linux amd64, Debian
 9.4:
 
-  <FAST-ENCRYPTION>, default.
-  $ time ./tinygpgs -c abc <hellow5long.bin >hellowc5long.bin.gpg
+  <FAST-ENCRYPTION> with standard OpenSSL hashlib + PyCrypto, default.
+  $ time python2.7 tinygpgs -c abc <hellow5long.bin >hellowc5long.bin.gpg
   info: GPG symmetric encrypt cipher_algo=aes-256 is_py_cipher=0 s2k_mode=iterated-salted digest_algo=sha1 is_py_digest=0 count=65536 len(salt)=8 len(encrypted_session_key)=0 do_mdc=1 len(session_key)=32
   8.828s user
 
   <MEDIUM-ENCRYPTION>.
-  $ time ./tinygpgs -c abc <hellow5long.bin >hellowc5long.bin.gpg
+  $ time python2.7 tinygpgs -c abc <hellow5long.bin >hellowc5long.bin.gpg
   info: GPG symmetric encrypt cipher_algo=aes-256 is_py_cipher=0 s2k_mode=iterated-salted digest_algo=sha1 is_py_digest=0 count=65536 len(salt)=8 len(encrypted_session_key)=0 do_mdc=1 len(session_key)=32
   18.856s user
 
   <SLOW-ENCRYPTION>, doesn't use a write buffer.
-  $ time ./tinygpgs -c abc <hellow5long.bin >hellowc5long.bin.gpg
+  $ time python2.7 tinygpgs -c abc <hellow5long.bin >hellowc5long.bin.gpg
   info: GPG symmetric encrypt cipher_algo=aes-256 is_py_cipher=0 s2k_mode=iterated-salted digest_algo=sha1 is_py_digest=0 count=65536 len(salt)=8 len(encrypted_session_key)=0 do_mdc=1 len(session_key)=32
   59.988s user
 
   $ time gpg -c --pinentry-mode loopback --cipher-algo aes-256 --digest-algo sha1 --s2k-count 65536 --compress-algo zip --compress-level 9 --force-mdc <hellow5long.bin >hellowc5long.bin.gpg
   6.444s user
 
-  This is very slow.
+  encryptedfile: This is very-very slow.
   $ time python -c 'import encryptedfile; f = encryptedfile.EncryptedFile("hellow5longef.bin.gpg", "abc", encryption_algo=encryptedfile.EncryptedFile.ALGO_AES256); f.write(open("hellow5long.gpg", "rb").read()); f.close()'
   1847.260s user
 
