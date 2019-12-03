@@ -71,7 +71,7 @@ Tools for decrypting symmetric key GPG message
   installation: pip install pgpy  # Has lots of dependendes, use virtualenv.
 
 https://github.com/thenoviceoof/encryptedfile supports only encryption,
---no-mdc and `--compress-algo none'.
+--no-armor, --no-mdc and `--compress-algo none'.
 
 Some other Python PGP projects are listed here: https://pypi.org/project/py-pgp/
 
@@ -172,26 +172,41 @@ Encryption (and compression) benchmark measurements on Linux amd64, Debian
 9.4:
 
   <FAST-ENCRYPTION> with standard OpenSSL hashlib + PyCrypto, default.
-  $ time python2.7 tinygpgs -c --passphrase abc <hellow5long.bin >hellowc5long.bin.gpg
+  $ time python2.7 tinygpgs -c --cipher-algo aes-256 --passphrase abc <hellow5long.bin >hellowc5long.bin.gpg
   info: GPG symmetric encrypt cipher_algo=aes-256 is_py_cipher=0 s2k_mode=iterated-salted digest_algo=sha1 is_py_digest=0 count=65536 len(salt)=8 len(encrypted_session_key)=0 do_mdc=1 len(session_key)=32
   8.828s user
 
   <FAST-ENCRYPTION>, with GpgSymmetricFileWriter file class API.
-  $ time python2.7 tinygpgs -c --file-class --passphrase abc <hellow5long.bin >hellowc5long.bin.gpg
+  $ time python2.7 tinygpgs -c --file-class --cipher-algo aes-256 --passphrase abc <hellow5long.bin >hellowc5long.bin.gpg
   info: GPG symmetric encrypt cipher_algo=aes-256 is_py_cipher=0 s2k_mode=iterated-salted digest_algo=sha1 is_py_digest=0 count=65536 len(salt)=8 len(encrypted_session_key)=0 do_mdc=1 len(session_key)=32
   8.688s user
 
+  <FAST-ENCRYPTION>, with ASCII armor. CRC24 calculation for the ASCII armor
+  makes it very slow. Without the CRC24 update (resulting an invalid output
+  file), it would take only 13.516s.
+  $ time python2.7 tinygpgs -c -a --cipher-algo aes-256 --passphrase abc <hellow5long.bin >hellowc5long.bin.gpg
+  info: GPG symmetric encrypt cipher_algo=cast5 is_py_cipher=0 s2k_mode=iterated-salted digest_algo=sha1 is_py_digest=0 count=65536 len(salt)=8 len(encrypted_session_key)=0 do_mdc=1 len(session_key)=16
+  63.236s user
+
+  <FAST-ENCRYPTION>, with GpgSymmetricFileWriter file class API and ASCII armor. CRC24 calculation for the ASCII armor
+  makes it very slow. Without the CRC24 update (resulting an invalid output
+  file), it would take only 13.516s.
+  $ time python2.7 tinygpgs -c -a --cipher-algo aes-256 --passphrase abc <hellow5long.bin >hellowc5long.bin.gpg
+  info: GPG symmetric encrypt cipher_algo=cast5 is_py_cipher=0 s2k_mode=iterated-salted digest_algo=sha1 is_py_digest=0 count=65536 len(salt)=8 len(encrypted_session_key)=0 do_mdc=1 len(session_key)=16
+  63.520s user
+
   <MEDIUM-ENCRYPTION>.
-  $ time python2.7 tinygpgs -c --passphrase abc <hellow5long.bin >hellowc5long.bin.gpg
+  $ time python2.7 tinygpgs -c --cipher-algo aes-256 --passphrase abc <hellow5long.bin >hellowc5long.bin.gpg
   info: GPG symmetric encrypt cipher_algo=aes-256 is_py_cipher=0 s2k_mode=iterated-salted digest_algo=sha1 is_py_digest=0 count=65536 len(salt)=8 len(encrypted_session_key)=0 do_mdc=1 len(session_key)=32
   18.856s user
 
   <SLOW-ENCRYPTION>, doesn't use a write buffer.
-  $ time python2.7 tinygpgs -c --passphrase abc <hellow5long.bin >hellowc5long.bin.gpg
+  $ time python2.7 tinygpgs -c --cipher-algo aes-256 --passphrase abc <hellow5long.bin >hellowc5long.bin.gpg
   info: GPG symmetric encrypt cipher_algo=aes-256 is_py_cipher=0 s2k_mode=iterated-salted digest_algo=sha1 is_py_digest=0 count=65536 len(salt)=8 len(encrypted_session_key)=0 do_mdc=1 len(session_key)=32
   59.988s user
 
-  $ time gpg -c --pinentry-mode loopback --cipher-algo aes-256 --digest-algo sha1 --s2k-count 65536 --compress-algo zip --compress-level 9 --force-mdc <hellow5long.bin >hellowc5long.bin.gpg
+  # Settings equivalent to `tinygpgs -c --cipher-algo aes-256'.
+  $ time gpg -c --pinentry-mode loopback --cipher-algo aes-256 --digest-algo sha1 --s2k-count 65536 --compress-algo zip --compress-level 6 --force-mdc --passphrase abc <hellow5long.bin >hellowc5long.bin.gpg
   6.444s user
 
   encryptedfile: This is very-very slow.

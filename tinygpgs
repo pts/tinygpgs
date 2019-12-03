@@ -26,10 +26,10 @@ All ciphers and hashes defined in the OpenPGP RFC
 # !! Add tests for ciphers and hashes.
 # !! Add Python 3 support.
 # !! Add help and docs.
-# !! Find ASCII armor later in the file, like how gpg(1) finds it.
 # !! Add gpg(1) compatibility flags: --passphrase-repeat n, --passphrase-fd n, --passphrase-file file, --passphrase string.
 # !! Add warning if slow becaue of Python hash or cipher.
 # !! Document encryptedfile and other Python modules.
+# !! Add compatible class API with encryptedfile.
 
 import itertools
 import struct
@@ -2785,14 +2785,12 @@ def write_partial_gpg_packet_chunks(fwrite, packet_type, data, fread, buflog2cap
 
 # Default values mostly same as of GPG 1.x, GPG <2.1 (checked 1.0.6 and 1.4.18).
 def get_encrypt_symmetric_gpg_params(
-    passphrase, is_slow_cipher=False, is_slow_hash=False, cipher='cast5', hash='sha1', compress='zip', compress_level=6, s2k_mode=3, s2k_count=65536, salt=None,
+    passphrase,  # This is the first arguments, order of others can change.
+    is_slow_cipher=False, is_slow_hash=False, cipher='cast5', hash='sha1', compress='zip', compress_level=6, s2k_mode=3, s2k_count=65536, salt=None,
     do_mdc=True,  # No fixed default, let's play it safe with True.
-    do_ascii_armor=False, buflog2cap=13,
-    plain_filename='', mtime=0, literal_type='b'):
+    buflog2cap=13, plain_filename='', mtime=0, literal_type='b', do_add_ascii_armor=False):
   _pack = struct.pack
   do_mdc = bool(do_mdc)
-  if do_ascii_armor:
-    raise ValueError('ASCII armor not implemented.')  # !! Implement ASCII armor.
   cipher = cipher.lower()
   for cipher_algo, cipher2 in sorted(CIPHER_ALGOS.iteritems()):
     if cipher2 == cipher:
@@ -2913,15 +2911,27 @@ def get_encrypt_symmetric_gpg_params(
     fr1 = cfb_encrypt(strxor_bs(encrypt_func(cfb_encrypt('\2' * bs)), fr))
     assert fr1 == fr
   literal_header = struct.pack('>cB%dsL' % len(plain_filename), literal_type, len(plain_filename), plain_filename, mtime)
-  return header, encrypt_func, bs, cfb_encrypt, plaintext_salt, mdc_obj, mdc_update, first_plaintext_chunk, ze, packet_type, packet_header, fr, literal_header, buflog2cap
+  return header, encrypt_func, bs, cfb_encrypt, plaintext_salt, mdc_obj, mdc_update, first_plaintext_chunk, ze, packet_type, packet_header, fr, literal_header, buflog2cap, do_add_ascii_armor
+
+
+def get_gpg_armor_trailer(abuf, asize, acrc, _b2a):
+  output = []
+  if asize:
+    adata = ''.join(abuf)
+    adata = _b2a(adata)
+    output.append(adata)
+    if not adata.endswith('\n'):
+      output.append('\n')
+  output.append('=')
+  output.append(_b2a(struct.pack('>L', acrc)[1:]))
+  output.append('\n-----END PGP MESSAGE-----\n')
+  return ''.join(output)
 
 
 def encrypt_symmetric_gpg(fread, of, *args, **kwargs):
   _buffer = buffer
-  header, encrypt_func, bs, cfb_encrypt, plaintext_salt, mdc_obj, mdc_update, first_plaintext_chunk, ze, packet_type, packet_header, fr, literal_header, buflog2cap = get_encrypt_symmetric_gpg_params(
+  header, encrypt_func, bs, cfb_encrypt, plaintext_salt, mdc_obj, mdc_update, first_plaintext_chunk, ze, packet_type, packet_header, fr, literal_header, buflog2cap, do_add_ascii_armor = get_encrypt_symmetric_gpg_params(
       *args, **kwargs)
-  of.write(header)
-  del header
   bufcap = 1 << buflog2cap
 
   def yield_plaintext_chunks():
@@ -2997,8 +3007,34 @@ def encrypt_symmetric_gpg(fread, of, *args, **kwargs):
           break
         data = pfread(pfread_size)
 
-  write_partial_gpg_packet_chunks(
-      of.write, packet_type, packet_header, iter_to_fread(yield_ciphertext_chunks(fr)), buflog2cap)
+  efread, of_write = iter_to_fread(yield_ciphertext_chunks(fr)), of.write
+  if do_add_ascii_armor:
+    # We treat all output files as binary, using '\n' as line separator.
+    # This is by design and for simplicity.
+    import binascii
+    _b2a, _crc24 = binascii.b2a_base64, crc24
+    abuf, asize, acrc = [header], len(header), _crc24(header)
+    del header
+    of_write('-----BEGIN PGP MESSAGE-----\n\n')
+    for bdata in yield_partial_gpg_packet_chunks(packet_type, packet_header, efread, buflog2cap):
+      abuf.append(bdata)
+      asize += len(bdata)
+      # In Python 2, calling _crc24 on an str many times is faster than
+      # calling it on a buffer multiple times.
+      acrc = _crc24(bdata, acrc)  # Very slow, no C extension alternative.
+      if asize >= 48:
+        adata, lam = ''.join(abuf), asize % 48
+        lal = asize - lam
+        # We need a loop here so that we get '\n' after each 48 (+16) bytes.
+        for i in xrange(0, lal, 48):
+          of_write(_b2a(_buffer(adata, i, 48)))  # Contains trailing '\n'.
+        abuf[:] = (adata[lal:],)
+        adata, asize = (), lam
+    of_write(get_gpg_armor_trailer(abuf, asize, acrc, _b2a))
+  else:
+    of_write(header)
+    del header
+    write_partial_gpg_packet_chunks(of_write, packet_type, packet_header, efread, buflog2cap)
 
 
 def get_cfb_encrypt_func(encrypt_func, bs, fr):  # fr is IV.
@@ -3078,7 +3114,8 @@ class GpgSymmetricFileWriter(object):
   __slots__ = ('_f', '_fwrite', '_pbuf', '_psize', '_plitp', '_qbuf', '_qsize',
                '_qhc', '_cpre', '_bs', '_ze', '_ze_compress', '_mdc_obj',
                '_mdc_update', '_cfb_encrypt', '_packet_type', '_packet_header',
-               '_packet_hc', '_ciphp', '_bufcap')
+               '_packet_hc', '_ciphp', '_bufcap', '_abuf', '_asize', '_acrc',
+               '_b2a')
 
   def __init__(self, filename, mode, *args, **kwargs):
     """Also pass passphrase=... You can pass .write method as filename."""
@@ -3090,7 +3127,7 @@ class GpgSymmetricFileWriter(object):
     else:
       self._f = f = open(filename, mode2 + 'b')
       self._fwrite = f.write
-    header, encrypt_func, bs, cfb_encrypt, plaintext_salt, mdc_obj, mdc_update, first_plaintext_chunk, ze, packet_type, packet_header, fr, literal_header, buflog2cap = get_encrypt_symmetric_gpg_params(
+    header, encrypt_func, bs, cfb_encrypt, plaintext_salt, mdc_obj, mdc_update, first_plaintext_chunk, ze, packet_type, packet_header, fr, literal_header, buflog2cap, do_add_ascii_armor = get_encrypt_symmetric_gpg_params(
         *args, **kwargs)
     self._bs, self._ze, self._mdc_obj, self._packet_type, self._packet_header = bs, ze, mdc_obj, packet_type, packet_header
     self._cpre, self._packet_hc, self._ciphp = packet_header, struct.pack('>B', 192 | packet_type), True  # Ciphertext buffer.
@@ -3106,7 +3143,17 @@ class GpgSymmetricFileWriter(object):
       self._ze_compress = ze.compress
     else:
       self._ze_compress = lambda data: data[:]
-    self._fwrite(header)
+    if do_add_ascii_armor:
+      import binascii
+      self._abuf, self._asize, self._acrc, self._b2a = [header], len(header), crc24(header), binascii.b2a_base64
+      assert self._b2a  # Used in tests later.
+      # Just like in encrypt_symmetric_gpg(...), we treat all output files as
+      # binary, using '\n' as line separator. This is by design and for
+      # simplicity.
+      self._fwrite('-----BEGIN PGP MESSAGE-----\n\n')
+    else:
+      self._fwrite(header)
+      self._abuf, self._asize, self._acrc, self._b2a = (), 0, (), ()
     self._pbuf, self._psize, self._plitp = [literal_header], len(literal_header), True  # Plaintext buffer.
     self._qhc = struct.pack('>B', 224 | buflog2cap)
     self._qbuf, self._qsize = [first_plaintext_chunk], len(first_plaintext_chunk)
@@ -3134,6 +3181,9 @@ class GpgSymmetricFileWriter(object):
   def close(self):
     """Closes the file, flushing all data."""
     # .close() is not suitable as __del__, it refers to global variables.
+    # !! At KeyboardInterrupt, the previous flush gets interrupted, leaving
+    #    the object in inconsistent state, and then this .close() will fail variously.
+    #    Add self._is_writing = True to .write.
     try:
       if self._pbuf is not ():
         self._done_pbuf()
@@ -3144,6 +3194,7 @@ class GpgSymmetricFileWriter(object):
         self._f = ()
       self._pbuf, self._psize = (), 0  # Further .write()s will fail.
       self._qbuf, self._qsize = (), 0
+      self._abuf, self._asize, self._acrc, self._b2a = (), 0, (), ()
       self._cpre = ()
       self._mdc_obj = self._mdc_update = self._ze = self._cfb_encrypt = ()
       self._plitp = self._qhc = self._packet_header = None
@@ -3185,8 +3236,26 @@ class GpgSymmetricFileWriter(object):
       self._add_encrypted(self._cfb_encrypt(data[j:] + '\0' * (self._bs - ldbs))[:ldbs])
     data = self._cpre  # Flush the last encrypted partial packet.
     self._cpre = ()
-    self._fwrite(get_last_nonpartial_packet_header(len(data), self._ciphp and self._packet_type))
-    self._fwrite(data)
+    header = get_last_nonpartial_packet_header(len(data), self._ciphp and self._packet_type)
+    fwrite = self._fwrite
+    if self._b2a:
+      abuf, asize, acrc, _b2a = self._abuf, self._asize, self._acrc, self._b2a
+      self._abuf, self._asize, self._acrc, self._b2a = (), 0, (), ()
+      acrc = crc24(data, crc24(header, acrc))
+      abuf.append(header)
+      abuf.append(data)
+      asize += len(header) + len(data)
+      adata, lam = ''.join(abuf), asize % 48
+      assert len(adata) == asize
+      lal, _buffer = asize - lam, buffer
+      for i in xrange(0, lal, 48):
+        fwrite(_b2a(_buffer(adata, i, 48)))  # Contains trailing '\n'.
+      abuf[:] = (adata[lal:],)
+      adata, asize = (), lam
+      fwrite(get_gpg_armor_trailer(abuf, asize, acrc, _b2a))
+    else:
+      fwrite(header)
+      fwrite(data)
 
   def _flush_pbuf(self, _pack=struct.pack, _buffer=buffer):
     _bufcap = self._bufcap
@@ -3198,12 +3267,17 @@ class GpgSymmetricFileWriter(object):
       for i in xrange(0, j, _bufcap):
         # TODO(pts): Is it faster to do additional buffering before compression?
         if self._plitp:
-          qbuf.append(ze_compress('\xcb' + self._qhc))  # packet_type == 11.
+          dataq = ze_compress('\xcb' + self._qhc)  # packet_type == 11.
           self._plitp = False
         else:
-          qbuf.append(ze_compress(self._qhc))
-        qbuf.append(ze_compress(_buffer(data, i, _bufcap)))
-        self._qsize += len(qbuf[-2]) + len(qbuf[-1])
+          dataq = ze_compress(self._qhc)
+        if dataq:
+          qbuf.append(dataq)
+          self._qsize += len(dataq)
+        dataq = ze_compress(_buffer(data, i, _bufcap))
+        if dataq:
+          qbuf.append(dataq)
+          self._qsize += len(dataq)
         if self._qsize >= _bufcap:
           self._flush_qbuf()
       pbuf[:], self._psize = [data[j:]], psize - j  # An empty string is OK here.
@@ -3225,21 +3299,46 @@ class GpgSymmetricFileWriter(object):
         del qbuf[:]
       self._qsize = ldbs
 
-  def _add_encrypted(self, cdata):
-    cpre = self._cpre
+  def _add_encrypted(self, cdata, _crc24=crc24):
+    cpre, _b2a, _bufcap, fwrite = self._cpre, self._b2a, self._bufcap, self._fwrite
     cpre += cdata  # Long copy. TODO(pts): Avoid it with multiple writes.
     del cdata
-    _bufcap = self._bufcap
     lcpb = len(cpre) - len(cpre) % _bufcap
-    for i in xrange(0, lcpb, _bufcap):  # Usually only once.
-      if self._ciphp:
-        # TODO(pts): Reset state on self._fwrite failure (everywhere).
-        self._fwrite(self._packet_hc + self._qhc)  # packet_type in (9, 18).
-        self._ciphp = False
-      else:
-        self._fwrite(self._qhc)
-      self._fwrite(buffer(cpre, i, _bufcap))
-    self._cpre = cpre[lcpb:]
+    #if lcpb < _bufcap:  # May happen only if called from _done_pbuf.
+    if _b2a:
+      abuf, asize, acrc, _buffer = self._abuf, self._asize, self._acrc, buffer
+      for i in xrange(0, lcpb, _bufcap):  # Usually only once.
+        if self._ciphp:
+          # TODO(pts): Reset state on fwrite failure (everywhere).
+          header = self._packet_hc + self._qhc  # packet_type in (9, 18).
+          self._ciphp = False
+        else:
+          header = self._qhc
+        # We copy it to make crc24 faster on Python 2.7.
+        data = cpre[i : i + _bufcap]
+        acrc = _crc24(data, _crc24(header, acrc))  # Very slow.
+        abuf.append(header)
+        abuf.append(data)
+        asize += len(header) + len(data)
+        if asize >= 48:
+          adata, lam = ''.join(abuf), asize % 48
+          lal = asize - lam
+          # We need a loop here so that we get '\n' after each 48 (+16) bytes.
+          for i in xrange(0, lal, 48):
+            fwrite(_b2a(_buffer(adata, i, 48)))  # Contains trailing '\n'.
+          abuf[:] = (adata[lal:],)
+          asize = lam
+      self._cpre, self._asize, self._acrc = cpre[lcpb:], asize, acrc
+    else:
+      for i in xrange(0, lcpb, _bufcap):  # Usually only once.
+        if self._ciphp:
+          # TODO(pts): Reset state on fwrite failure (everywhere).
+          fwrite(self._packet_hc + self._qhc)  # packet_type in (9, 18).
+          self._ciphp = False
+        else:
+          fwrite(self._qhc)
+        fwrite(buffer(cpre, i, _bufcap))
+      self._cpre = cpre[lcpb:]
 
 
 # --- Unified class API.
@@ -3300,9 +3399,9 @@ def main(argv):
   encrypt_params = {}
   passphrase = lambda: prompt_passphrase(False)
   if argv[1] in ('-c', '--symmetric'):  # Like gpg(1).
-    command = 'encrypt'
+    do_encrypt = True
   elif argv[1] in ('-d', '--decrypt'):  # Like gpg(1).
-    command = 'decrypt'
+    do_encrypt = False
   elif argv[1] in ('-e', '--encrypt', '-s', '--sign'):  # Like gpg(1).
     sys.exit('usage: public-key cryptography not supported: %s' % argv[1])
   else:
@@ -3325,11 +3424,16 @@ def main(argv):
       is_slow_hash = True
     elif arg == '--file-class':
       is_file_class = True
-    elif arg == '--passphrase' and i < len(argv):  # !! TODO(pts): Add more secure variants.
-      passphrase = argv[i]
+    elif arg == '--passphrase' and i < len(argv):  # gpg(1).
+      passphrase = argv[i]  # !! TODO(pts): Add more secure variants.
       i += 1
-    elif arg == '--bufcap' and i < len(argv) and command == 'encrypt':  # !! TODO(pts): Add more secure variants.
-      bufcap = int(argv[i])  # TODO(pts): Show nicer error if not int.
+    elif arg == '--bufcap' and i < len(argv):
+      bufcap = int(argv[i])  # TODO(pts): Show nicer error on bad int.
+      i += 1
+    elif arg in ('-a', '--armor') and do_encrypt:  # gpg(1).
+      encrypt_params['do_add_ascii_armor'] = True
+    elif arg == '--no-armor' and do_encrypt:  # gpg(1).
+      encrypt_params['do_add_ascii_armor'] = False
       i += 1
     else:
       sys.exit('usage: unknown flag: ' + arg)
@@ -3340,7 +3444,7 @@ def main(argv):
   set_fd_binary(inf.fileno())
   of = sys.stdout
   set_fd_binary(of.fileno())
-  if command == 'encrypt':
+  if do_encrypt:
     if bufcap < 1 or bufcap & (bufcap - 1):
       sys.exit('usage: --bufcap value must be a power of 2, got: %d' % bufcap)
     buflog2cap = 1
@@ -3374,7 +3478,7 @@ def main(argv):
         f.close()
     else:
       encrypt_symmetric_gpg(inf.read, of, **encrypt_params)
-  elif command == 'decrypt':
+  else:
     try:
       if is_file_class:
         f = GpgSymmetricFileReader(inf.read, 'rb', passphrase, is_slow_cipher, is_slow_hash)
