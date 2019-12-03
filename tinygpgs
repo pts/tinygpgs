@@ -1966,6 +1966,15 @@ def show_info(msg):
   sys.stderr.flush()  # Automatic, but play it safe.
 
 
+class _DummyClass(object):
+  def dummy():
+    pass
+
+
+def is_python_function(func, _types=(type(_DummyClass().dummy), type(lambda: 0))):
+  return type(func) in _types
+
+
 # --- GPG decryption.
 
 
@@ -2228,7 +2237,7 @@ def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash, show_inf
   if digest_algo not in DIGEST_ALGOS:
     raise ValueError('Unknown SKESK digest_algo: %d' % digest_algo)
   digest_func = lambda data='': new_hash(DIGEST_ALGOS[digest_algo], data, is_slow_hash)
-  show_info_func('GPG symmetric is_py_digest=%d' % int(type(getattr(digest_func().update, 'im_func', None)) == type(lambda: 0)))
+  show_info_func('GPG symmetric is_py_digest=%d' % int(is_python_function(digest_func().update)))
   keytable_size = KEYTABLE_SIZES[cipher_algo]
   for packet_type, is_partial, data2 in iter_packets:
     break
@@ -2343,8 +2352,7 @@ def get_decrypt_symmetric_gpg_literal_packet_reader(
   #print (cipher_algo, session_key, has_mdc)
   strxor_2 = make_strxor(2)
   codebook, bs = get_gpg_cipher(cipher_algo, session_key, is_slow_cipher)
-  show_info_func('GPG symmetric is_py_cipher=%d' %
-                 (int(type(getattr(codebook.encrypt, 'im_func', None)) == type(lambda: 0)),))
+  show_info_func('GPG symmetric is_py_cipher=%d' % int(is_python_function(codebook.encrypt)))
   strxor_bs = make_strxor(bs)  # For cipher_algo block size.
   encrypt_func = codebook.encrypt
   fre = encrypt_func('\0' * bs)
@@ -2438,10 +2446,7 @@ def get_decrypt_symmetric_gpg_literal_packet_reader(
         yield zd_decompress(data1)  # Can raise zlib.error.
       else:
         yield data1
-    _fast_strxor = fast_strxor
-    # !!! Fix .im_func etc.
-    if _fast_strxor and type(encrypt_func) is type(lambda: 0):  # Not fast C extension.
-      _fast_strxor = None
+    _fast_strxor = not is_python_function(encrypt_func) and fast_strxor
     if len(data) == bs:
       bs2bs = (bs * (2 + mdc_min_queue_size), bs)
       bsmdc = bs * mdc_min_queue_size
@@ -2886,10 +2891,10 @@ def get_encrypt_symmetric_gpg_params(
         's2k_count=%d len(s2k_salt)=%d compress_algo=%s(%d) compress_level=%d len(encrypted_session_key)=%d do_mdc=%d '
         'len(session_key)=%d bufcap=%d literal_type=%r plain_filename=%r mtime=%d do_add_ascii_armor=%d' %
         (CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), cipher_algo,
-         int(type(getattr(codebook0.encrypt, 'im_func', None)) == type(lambda: 0)),
+         int(is_python_function(codebook0.encrypt)),
          S2K_MODES.get(s2k_mode, s2k_mode), s2k_mode,
          DIGEST_ALGOS.get(digest_algo, digest_algo), digest_algo,
-         int(type(getattr(digest_func().update, 'im_func', None)) == type(lambda: 0)),
+         int(is_python_function(digest_func().update)),
          count, len(salt),
          COMPRESS_ALGOS.get(compress_algo, compress_algo), compress_algo, compress_level,
          0, int(do_mdc), keytable_size, 1 << buflog2cap, literal_type, plain_filename, mtime, int(bool(do_add_ascii_armor))))
