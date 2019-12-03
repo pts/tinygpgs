@@ -3071,12 +3071,13 @@ class GpgSymmetricFileWriter(object):
 
   def __init__(self, filename, mode, *args, **kwargs):
     """Also pass passphrase=... You can pass .write method as filename."""
-    if mode not in ('w', 'wb', 'bw'):
+    mode2 = mode.replace('b', '')
+    if mode2 not in ('w', 'a'):
       raise ValueError('Bad mode for GpgSymmetricFileWriter: %s' % (mode,))
     if callable(filename):
       self._f, self._fwrite = None, filename
     else:
-      self._f = f = open(filename, 'rb')
+      self._f = f = open(filename, mode2 + 'b')
       self._fwrite = f.write
     header, encrypt_func, bs, cfb_encrypt, plaintext_salt, mdc_obj, mdc_update, first_plaintext_chunk, ze, packet_type, packet_header, fr, literal_header, buflog2cap = get_encrypt_symmetric_gpg_params(
         *args, **kwargs)
