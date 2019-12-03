@@ -2140,7 +2140,7 @@ def get_gpg_ascii_armor_fread(fread):
   return iter_to_fread(yield_data_chunks())
 
 
-def yield_gpg_packets(fread):
+def yield_gpg_packets(fread, has_ascii_armor_ary=None):
   while 1:
     c = fread(1)
     if not c:
@@ -2151,10 +2151,14 @@ def yield_gpg_packets(fread):
     data = fread(27)
     if not (len(data) == 27 and data.startswith('-----BEGIN PGP MESSAGE-----'[1:]) and data[26] in '\r\n'):
       raise ValueError('GPG ASCII armor expected.')
+    if has_ascii_armor_ary is not None:
+      has_ascii_armor_ary.append(True)
     fread = get_gpg_ascii_armor_fread(fread)
     c = fread(1)
     if not c:
       raise ValueError('Empty GPG ASCII armor data.')
+  elif has_ascii_armor_ary is not None:
+    has_ascii_armor_ary.append(False)
   b, packet_type = ord(c), -1
   if b & 128:
     packet_type = (b & 63) >> ((~b >> 5) & 2)
@@ -2175,12 +2179,12 @@ def yield_gpg_packets(fread):
     yield packet
 
 
-def open_symmetric_gpg(f, passphrase, is_slow_cipher, is_slow_hash):
+def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash):
   # https://tools.ietf.org/html/rfc4880
   # TODO(pts): Support the ASCII armor as well.
-  is_prev_partial = False
+  is_prev_partial, has_ascii_armor_ary = False, []
   cipher_algo = session_key = None
-  iter_packets = yield_gpg_packets(f)
+  iter_packets = yield_gpg_packets(fread, has_ascii_armor_ary)
   for packet_type, is_partial, data in iter_packets:
     break
   else:
@@ -2211,8 +2215,8 @@ def open_symmetric_gpg(f, passphrase, is_slow_cipher, is_slow_hash):
       count = (16 + (b & 15)) << ((b >> 4) + 6)
     else:
       count = 0
-  print >>sys.stderr, 'info: GPG symmetric cipher_algo=%s s2k_mode=%s digest_algo=%s count=%d len(salt)=%d len(encrypted_session_key)=%d' % (
-      CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), S2K_MODES.get(s2k_mode, s2k_mode), DIGEST_ALGOS.get(digest_algo, digest_algo), count, len(salt), len(data) - i)
+  print >>sys.stderr, 'info: GPG symmetric cipher_algo=%s s2k_mode=%s digest_algo=%s count=%d len(salt)=%d len(encrypted_session_key)=%d has_ascii_armor=%d' % (
+      CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), S2K_MODES.get(s2k_mode, s2k_mode), DIGEST_ALGOS.get(digest_algo, digest_algo), count, len(salt), len(data) - i, int(has_ascii_armor_ary[0]))
   #print >>sys.stderr, 'SKESK cipher_algo=%s s2k_mode=%s digest_algo=%s count=%d salt=%r encrypted_session_key=%r' % (
   #    CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), S2K_MODES.get(s2k_mode, s2k_mode), DIGEST_ALGOS.get(digest_algo, digest_algo), count, salt, data[i:])
   if cipher_algo not in CIPHER_ALGOS:
