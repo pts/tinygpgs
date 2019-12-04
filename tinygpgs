@@ -2809,7 +2809,7 @@ def get_encrypt_symmetric_gpg_params(
     passphrase,  # This is the first argument, order of others can change.
     is_slow_cipher=False, is_slow_hash=False, cipher='cast5', s2k_digest='sha1', compress='zip', compress_level=6, s2k_mode=3, s2k_count=65536, salt=None,
     do_mdc=True,  # No fixed default in gpg(1), let's play it safe with True.
-    buflog2cap=13, plain_filename='', mtime=0, literal_type='b', do_add_ascii_armor=False, show_info_func=None, do_show_session_key=False):
+    buflog2cap=13, plain_filename='', mtime=0, literal_type='b', do_add_ascii_armor=False, show_info_func=None, do_show_session_key=False, iv=None):
   if not show_info_func:
     show_info_func = lambda msg: 0
   _pack = struct.pack
@@ -2838,8 +2838,9 @@ def get_encrypt_symmetric_gpg_params(
   if s2k_mode == 0:
     salt, count = '', 0
   elif s2k_mode in (1, 3):
-    if not salt:
-      salt = get_random_bytes_default(8)
+    salt = (salt or '')[:8]
+    if len(salt) < 8:
+      salt = get_random_bytes_default(8 - len(salt))
     if len(salt) != 8:
       raise ValueError('GPG symmetric salt must be %d bytes, got: %d' % len(salt))
     if s2k_mode == 3:
@@ -2866,7 +2867,9 @@ def get_encrypt_symmetric_gpg_params(
   digest_func = lambda data='': new_hash(s2k_digest, data, is_slow_hash)
   keytable_size = KEYTABLE_SIZES[cipher_algo]
   codebook0, bs = get_gpg_cipher(cipher_algo, '\0' * keytable_size, is_slow_cipher)
-  plaintext_salt = get_random_bytes_default(bs)
+  plaintext_salt = (iv or '')[:bs]
+  if len(plaintext_salt) < bs:
+    plaintext_salt = get_random_bytes_default(bs - len(plaintext_salt))
   if s2k_mode == 3:
     if count == 65536:  # Shortcut.
       bestb = 0x60
@@ -3145,7 +3148,7 @@ class GpgSymmetricFileWriter(object):
                '_qhc', '_cpre', '_bs', '_ze', '_ze_compress', '_mdc_obj',
                '_mdc_update', '_cfb_encrypt', '_packet_type', '_packet_header',
                '_packet_hc', '_ciphp', '_bufcap', '_abuf', '_asize', '_acrc',
-               '_b2a', '_psizec')
+               '_b2a', '_psizec', 'count')
 
   def __init__(self, filename, mode, *args, **kwargs):
     """Also pass passphrase=... You can pass .write method as filename."""
@@ -3184,6 +3187,7 @@ class GpgSymmetricFileWriter(object):
     else:
       self._fwrite(header)
       self._abuf, self._asize, self._acrc, self._b2a = (), 0, (), ()
+    self.count = 0  # Compatible with EncryptedFile.
     self._pbuf, self._psize, self._plitp = [literal_header], len(literal_header), True  # Plaintext buffer.
     self._psizec = self._psize  # Canary used in .close() to detect a partial .write().
     self._qhc = struct.pack('>B', 224 | buflog2cap)
@@ -3191,8 +3195,11 @@ class GpgSymmetricFileWriter(object):
     self._flush_pbuf()
     del header
 
+  def tell(self):
+    return self.count
+
   def write(self, data):
-    """Write data bytes, compress on the fly.
+    """Write binary data bytes, compress on the fly.
 
     For high, speed, write data in chunks of at least 8192 bytes (preferred:
     65536 bytes). For maximum speed, use encrypt_symmetric_gpg instead.
@@ -3210,8 +3217,12 @@ class GpgSymmetricFileWriter(object):
       self._psizec = self._psize
 
   def flush(self):
-    # There is no way to flush the encryption buffer, partial packets have a
-    # fixed buffer size (of a power of 2).
+    """Flushes the backing file object.
+
+    It's impossible to flush the encryption buffer, because partial GPG
+    packets can't be flushed early, because they have a fixed buffer size
+    (of a power of 2).
+    """
     if self._f:
       self._f.flush()
 
@@ -3374,6 +3385,198 @@ class GpgSymmetricFileWriter(object):
           fwrite(self._qhc)
         fwrite(buffer(cpre, i, _bufcap))
       self._cpre = cpre[lcpb:]
+
+
+# --- EncryptedFile-compatible writer class API.
+
+
+class EncryptedFile(GpgSymmetricFileWriter):
+  """EncryptedFile-compatible class for encrypting symmetric GPG.
+
+  Implements the same interface as class EncryptedFile in EncryptedFile.py
+  (https://github.com/thenoviceoof/encryptedfile/blob/master/encryptedfile/EncryptedFile.py)
+  in https://pypi.org/project/encryptedfile/ , version 1.1.
+
+  Example usage:
+
+    import getpass
+    f = EncryptedFile('FILE.bin.gpg', passphrase=getpass.getpass())
+    try:
+      f.write('Hello, World!\n')
+      f.write('This is the end.\n')
+    finally:
+      f.close()
+
+  The only incompatibility is with writing line breaks in multiple chunks in
+  text mode, e.g. for .write('A\r'), .write('\nB'), the user may be
+  expecting 'A\r\nB', but actually 'A\r\r\nB' will be written. To avoid this
+  problem, don't include '\r' in the argument to .write(...).
+
+  This implementation tries to be compatible with encryptedfile, keeping
+  most of its design and behavior intact, and only improving speed.
+  """
+
+  __version__ = (1, 1, 1)  # Compatible with encryptedfile 1.1.1.
+
+  # OpenPGP values
+  ALGO_IDEA = 1  # Not in encryptedfile 1.1.1
+  ALGO_3DES = ALGO_DES3 = 2  # Not in encryptedfile 1.1.1
+  ALGO_CAST5 = 3  # Not in encryptedfile 1.1.1
+  ALGO_BLOWFISH = 4
+  ALGO_AES128 = 7
+  ALGO_AES196 = 8
+  ALGO_AES256 = 9
+  ALGO_TWOFISH = 10  # Not in encryptedfile 1.1.1
+
+  S2K_SIMPLE = 0
+  S2K_SALTED = 1
+  S2K_ITERATED = 3
+
+  HASH_MD5 = 1
+  HASH_SHA1 = 2
+  HASH_RIPEMD160 = 3  # Not in encryptedfile 1.1.1
+  HASH_SHA256 = 8
+  HASH_SHA384 = 9
+  HASH_SHA512 = 10
+  HASH_SHA224 = 11  # Not in encryptedfile 1.1.1
+
+  # Unused, for compatibility with encryptedfile 1.1.1. In
+  # encryptedfile the values are PyCrypto.Cipher.* module objects.
+  ENCRYPTION_ALGOS = {
+      ALGO_IDEA: 'IDEA',
+      ALGO_3DES: '3DES',
+      ALGO_BLOWFISH : 'Blowfish',
+      ALGO_AES128: 'AES',
+      ALGO_AES196: 'AES',
+      ALGO_AES256: 'AES',
+      ALGO_TWOFISH: 'Twofish',
+  }
+
+  KEY_SIZES = dict(KEYTABLE_SIZES)
+
+  # Unused, for compatibility with encryptedfile 1.1.1. In
+  # encryptedfile the values are hashlib constructor functions.
+  HASHES = {
+      HASH_MD5: lambda data='': new_hash('md5', data),
+      HASH_SHA1: lambda data='': new_hash('sha1', data),
+      HASH_RIPEMD160: lambda data='': new_hash('ripemd160', data),
+      HASH_SHA256: lambda data='': new_hash('sha256', data),
+      HASH_SHA384: lambda data='': new_hash('sha384', data),
+      HASH_SHA512: lambda data='': new_hash('sha512', data),
+      HASH_SHA224: lambda data='': new_hash('sha224', data),
+  }
+
+  __slots__ = ('file', '_is_text')
+
+  def __init__(
+      self, file_obj, passphrase, mode='w', iv=None, salt=None,
+      block_size=16, buffer_size=1024, timestamp=None,
+      encryption_algo=ALGO_AES256, hash_algo=HASH_SHA256,
+      key_method=S2K_ITERATED, iterated_count=(16, 6)):
+    """Creates a writeable file-like object which encrypts.
+
+    Args:
+      file_obj: a string or file-like object: a string should be a path, or
+          a file object to write through to the file.
+      passphrase: passphrase
+      mode: usual file modes
+      iv: initialization vector, randomly generated if not
+          given, same size as block_size.
+      key_method: which S2K_* method to use
+      hash_algo: which HASH_* to convert the passphrase with
+      encryption_algo: which ALGO_* to encrypt the plaintext with
+      block_size: used by the cipher. Ignored, the cipher knows its own block
+          size.
+      buffer_size: how much data should be slurped up before encrypting
+      timestamp: <int>: timestamp, if any, to be attached to the literal data
+          if not given, just writes zeroes
+      iterated_count: a tuple (base, exp), where base is between [16, 32),
+        and the exp is between 6 and 22
+    """
+    if 'w' not in mode:
+      raise ValueError('Only \'wb\' mode supported')
+    encrypt_params = {
+        'passphrase': passphrase,
+        'cipher': CIPHER_ALGOS[encryption_algo],
+        's2k_digest': DIGEST_ALGOS[hash_algo],
+        'compress': 'none',
+        's2k_mode': key_method,
+        's2k_count': iterated_count[0] << iterated_count[1],
+        'mtime': timestamp or 0,
+        'do_mdc': False,
+        'do_add_ascii_armor': False,
+        'iv': iv,
+        'salt': salt,
+    }
+    if isinstance(file_obj, basestring):
+      if len(file_obj) > 0xff:
+        raise ValueError('File name is too long')
+      self.file = open(file_obj, mode)
+      encrypt_params['plain_filename'] = file_obj
+    elif isinstance(file_obj, file):
+      self.file = file_obj
+      encrypt_params['plain_filename'] = file_obj.name[:0xff]
+    else:
+      raise TypeError
+    del block_size
+    buflog2cap = 13  # At least 8192 bytes, for speed.
+    while buffer_size > (1 << buflog2cap):
+      buflog2cap += 1
+    encrypt_params['buflog2cap'] = buflog2cap
+    if 'b' in mode:
+      encrypt_params['literal_type'], self._is_text = 'b', False
+    else:
+      encrypt_params['literal_type'], self._is_text = 't', True
+    GpgSymmetricFileWriter.__init__(self, self.file.write, mode, **encrypt_params)
+
+  # Handle {with EncryptedFile(...) as f:} notation.
+  def __enter__(self):
+    return self
+
+  def __exit__(self, type, value, traceback):
+    self.close()
+
+  def writelines(self, lines):
+    self.write(''.join(lines))
+
+  def read(self, *args, **kwargs):
+    raise NotImplementedError()
+
+  def readlines(self, *args, **kwargs):
+    raise NotImplementedError()
+
+  def seek(self, offset, whence=None):
+    raise NotImplementedError()
+
+  def isatty(self):
+    return False
+
+  def flush(self):
+    if self.file:
+      self.file.flush()
+
+  def close(self):
+    if self.file.closed:
+      return
+    GpgSymmetricFileWriter.close(self)
+    if self.file:
+      self.file.close()
+
+  def write(self, data):
+    """Write text bytes, converting it to binary first.
+
+    This method was added for compatibility with encrytedfile, it's added
+    functionality is used instead of .write for non-binary mode.
+    """
+    if self._is_text:
+      if isinstance(data, unicode):
+        data = data.encode('utf-8')
+      # This is a simple, low-effort conversion of line breaks to '\r\n',
+      # without using regexps. It works correctly except for
+      # .write_text('A\r'), .write_text('\nB'), for which the user may be
+      # expecting 'A\r\nB', but actually 'A\r\r\nB' will be written.
+      data = data.replace('\r\n', '\n').replace('\r', '\n').replace('\n', '\r\n')
+    GpgSymmetricFileWriter.write(self, data)
 
 
 # --- Unified class API.
@@ -3566,7 +3769,7 @@ def main(argv):
     raise SystemExit('usage: --bufcap value must be a power of 2, got: %d' % bufcap)
   buflog2cap = 1
   while bufcap > (1 << buflog2cap):
-    buflog2cap +=1
+    buflog2cap += 1
   assert bufcap == 1 << buflog2cap  # Just to make sure.
   if buflog2cap > 30:
     raise SystemExit('usage: --bufcap value too large, must be at most %d, got: %d' % (1 << 30, bufcap))

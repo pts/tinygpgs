@@ -25,6 +25,10 @@ Features:
 * minimal dependencies: Works out-of-the-box with standard Python modules,
   but becomes much faster if PyCrypto is installed.
 * any Python 2: works with any Python 2.4, 2.5, 2.6 or 2.7.
+* no regexps: the implementation doesn't use regexps, thus avoiding speed
+  (and potential catastrophic speed) issues
+* binary mode: always works in binary mode, doesn't do any coversion on
+  the plaintext (not even when decrypting, this is a difference from GPG)
 
 Planned features:
 
@@ -227,7 +231,7 @@ Encryption (and compression) benchmark measurements on Linux amd64, Debian
   6.444s user
 
   encryptedfile: This is very-very slow.
-  $ time python -c 'import encryptedfile; f = encryptedfile.EncryptedFile("hellow5longef.bin.gpg", "abc", encryption_algo=encryptedfile.EncryptedFile.ALGO_AES256); f.write(open("hellow5long.gpg", "rb").read()); f.close()'
+  $ time python -c 'import encryptedfile; f = encryptedfile.EncryptedFile("hellow5longef.bin.gpg", "abc", encryption_algo=encryptedfile.EncryptedFile.ALGO_AES256); f.write(open("hellow5long.gpg", "wb").read()); f.close()'
   1847.260s user
 
 __END__
