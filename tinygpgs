@@ -3643,6 +3643,20 @@ def get_flag_arg_int(argv, i):
     raise SystemExit('usage: flag value must be an integer: %s %s' % (argv[i - 1], argv[i]))
 
 
+def read_passphrase_from_fd(fd):
+  # We need binary mode for 8-bit accurate s2k.
+  set_fd_binary(fd)
+  import os
+  # Don't read more bytes than needed.
+  output = []
+  while 1:
+    c = os.read(fd, 1)  # Don't read too much.
+    if not c or c in '\r\n':
+      # No need for os.close(fd).
+      return ''.join(output)
+    output.append(c)
+
+
 def main(argv):
   if len(argv) < 2 or argv[1] == '--help':
     usage(argv[0])
@@ -3787,11 +3801,7 @@ def main(argv):
     finally:
       f.close()
   elif isinstance(params['passphrase'], (int, long)):  # File descroptor.
-    # We need binary mode for 8-bit accurate s2k.
-    import os
-    f = os.fdopen(params['passphrase'], 'rb')
-    params['passphrase'] = f.readline().rstrip('\r\n')
-    # No need to close f.
+    params['passphrase'] = read_passphrase_from_fd(params['passphrase'])
   elif params['passphrase'] is ():  # Interactive prompt.
     if is_batch:
       raise SystemExit('usage: passphrase prompt conflicts with --batch mode')
