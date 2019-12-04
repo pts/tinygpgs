@@ -46,11 +46,11 @@ def prompt_passphrase(do_passphrase_twice):
   # or use `--passphrase ...'.
   passphrase = getpass.getpass('Enter passphrase: ')
   if not passphrase:
-    raise SystemExit('empty passphrase')
+    raise SystemExit('fatal: empty passphrase')
   if do_passphrase_twice:
     passphrase2 = getpass.getpass('Re-enter passphrase: ')
     if passphrase != passphrase2:
-      raise SystemExit('passphrases do not match')
+      raise SystemExit('fatal: passphrases do not match')
   return passphrase
 
 
@@ -3427,7 +3427,7 @@ def usage(argv0):
 
 def get_flag_arg(argv, i):
   if i >= len(argv):
-    sys.exit('usage: missing argument for flag: ' + argv[i - 1])
+    raise SystemExit('usage: missing argument for flag: ' + argv[i - 1])
   return argv[i]
 
 
@@ -3437,17 +3437,18 @@ def get_flag_arg_int(argv, i):
     return int(value)
   except ValueError:
     # TODO(pts): Check for positive value etc.
-    sys.exit('usage: flag value must be an integer: %s %s' % (argv[i - 1], argv[i]))
+    raise SystemExit('usage: flag value must be an integer: %s %s' % (argv[i - 1], argv[i]))
 
 
 def main(argv):
   if len(argv) < 2 or argv[1] == '--help':
     usage(argv[0])
   argv = list(argv)
-  is_file_class = False
+  is_file_class = is_batch = do_passphrase_twice = is_yes_flag = False
+  output_file = input_file = None
   bufcap = 8192
   params = {}
-  params['passphrase'] = lambda: prompt_passphrase(False)
+  params['passphrase'] = ()
   params['show_info_func'] = show_info
   encrypt_params = {}
   if argv[1] in ('-c', '--symmetric'):  # Like gpg(1).
@@ -3455,7 +3456,7 @@ def main(argv):
   elif argv[1] in ('-d', '--decrypt'):  # Like gpg(1).
     do_encrypt = False
   elif argv[1] in ('-e', '--encrypt', '-s', '--sign', '--verify'):  # Like gpg(1).
-    sys.exit('usage: public-key cryptography not supported: %s' % argv[1])
+    raise SystemExit('usage: public-key cryptography not supported: %s' % argv[1])
   else:
     usage(argv[0])
   i = 2
@@ -3469,7 +3470,7 @@ def main(argv):
       break
     elif arg == '--pinentry-mode':  # gpg(1).
       if get_flag_arg(argv, i) != 'loopback':
-        sys.exit('usage: invalid flag value for --pinentry-mode: ' + argv[i])
+        raise SystemExit('usage: invalid flag value for --pinentry-mode: ' + argv[i])
       i += 1
     elif arg in ('--slow-cipher', '--no-slow-cipher'):
       params['is_slow_cipher'] = is_yes
@@ -3477,16 +3478,39 @@ def main(argv):
       params['is_slow_hash'] = is_yes
     elif arg in ('--file-class', '--no-file-class'):
       is_file_class = is_yes
+    elif arg in ('--batch', '--no-batch'):  # gpg(1).
+      is_batch = is_yes
+    elif arg == '--yes':  # gpg(1).
+      is_yes_flag = True
+    elif arg == '--no':  # gpg(1).
+      is_yes_flag = False
+    elif arg in ('-q', '--quiet'):  # gpg(1).
+      params['show_info_func'] = False
+    elif arg in ('-v', '--verbose'):  # gpg(1).
+      params['show_info_func'] = show_info
     elif arg in ('--show-info', '--no-show-info'):
       params['show_info_func'] = is_yes and show_info
     elif arg in ('--show-session-key', '--no-show-session-key'):  # gpg(1).
       params['do_show_session_key'] = is_yes
     elif arg == '--passphrase':  # gpg(1).
-      # !! Add gpg(1)-compatible more secure variants: --passphrase-repeat n, --passphrase-fd n, --passphrase-file file.
       params['passphrase'] = get_flag_arg(argv, i)
+      i += 1
+    elif arg == '--passphrase-fd':  # gpg(1).
+      params['passphrase'] = get_flag_arg_int(argv, i)
+      i += 1
+    elif arg == '--passphrase-file':  # gpg(1).
+      params['passphrase'] = [get_flag_arg(argv, i)]
+      i += 1
+    elif arg == '--passphrase-repeat':  # gpg(1).
+      # GPG 2.1.18 ignores this flag with `--pinentry-mode loopback'. We use
+      # it for a repeated passphrase prompt.
+      do_passphrase_twice = get_flag_arg_int(argv, i) > 1
       i += 1
     elif arg == '--bufcap':
       bufcap = get_flag_arg_int(argv, i)
+      i += 1
+    elif arg in ('-o', '--output'):  # gpg(1).
+      output_file = get_flag_arg(argv, i)
       i += 1
     elif do_encrypt and arg == '--cipher-algo':  # gpg(1).
       encrypt_params['cipher'] = get_flag_arg(argv, i)
@@ -3525,68 +3549,119 @@ def main(argv):
       encrypt_params['mtime'] = get_flag_arg_int(argv, i)
       i += 1
     else:
-      sys.exit('usage: unknown flag: ' + arg)
+      raise SystemExit('usage: unknown flag: ' + arg)
+  if i < len(argv) and input_file is None:  # gpg(1).
+    input_file = argv[i]
+    i += 1
   if i != len(argv):
-    sys.exit('usage: too many command-line arguments')
-  # !! Support filename and filename + '.gpg'.
+    raise SystemExit('usage: too many command-line arguments')
+  if input_file is None:
+    input_file = '-'
+  if output_file is None:
+    if do_encrypt and input_file != '-':
+      output_file = input_file + '.gpg'  # gpg(1).
+    else:
+      output_file = '-'
   if bufcap < 1 or bufcap & (bufcap - 1):
-    sys.exit('usage: --bufcap value must be a power of 2, got: %d' % bufcap)
+    raise SystemExit('usage: --bufcap value must be a power of 2, got: %d' % bufcap)
   buflog2cap = 1
   while bufcap > (1 << buflog2cap):
     buflog2cap +=1
   assert bufcap == 1 << buflog2cap  # Just to make sure.
   if buflog2cap > 30:
-    sys.exit('usage: --bufcap value too large, must be at most %d, got: %d' % (1 << 30, bufcap))
+    raise SystemExit('usage: --bufcap value too large, must be at most %d, got: %d' % (1 << 30, bufcap))
   if buflog2cap < 9:
     # Some ciphers need >= 16, GPG partial packets need at least 512.
-    sys.exit('usage: --bufcap value too small, must be at least %d, got: %d' % (1 << 9, bufcap))
-
-  inf = sys.stdin
-  set_fd_binary(inf.fileno())
-  of = sys.stdout
-  set_fd_binary(of.fileno())
-  if do_encrypt:
-    encrypt_params.update(params)  # Shouldn't have common fields.
-    encrypt_params['buflog2cap'] = buflog2cap
-    if ('bzip2_compress_level' in encrypt_params and
-        encrypt_params.get('compress', '').lower() == 'bzip2'):
-      encrypt_params['compress_level'] = encrypt_params.pop('bzip2_compress_level')
-    # Defaults in GPG <2.1, including 1.4.18.
-    #encrypt_params.setdefault('cipher', 'sha256')
-    #encrypt_params.setdefault('compress', 'none')
-    #encrypt_params.setdefault('compress_level', 9)
-    #encrypt_params.setdefault('do_mdc', False)
-    if is_file_class:
-      f = GpgSymmetricFileWriter(of.write, 'wb', **encrypt_params)
-      try:
-        while 1:
-          data = inf.read(bufcap)
-          if not data:
-            break
-          f.write(data)
-      finally:
-        f.close()
-    else:
-      encrypt_symmetric_gpg(inf.read, of, **encrypt_params)
-  else:
+    raise SystemExit('usage: --bufcap value too small, must be at least %d, got: %d' % (1 << 9, bufcap))
+  if isinstance(params['passphrase'], list):  # File:
+    # We need binary mode for 8-bit accurate s2k.
     try:
+      f = open(params['passphrase'][0], 'rb')
+    except IOError, e:
+      raise SystemExit('fatal: error opening the passphrase file: %s' % e)
+    try:
+      params['passphrase'] = f.readline().rstrip('\r\n')
+    finally:
+      f.close()
+  elif isinstance(params['passphrase'], (int, long)):  # File descroptor.
+    # We need binary mode for 8-bit accurate s2k.
+    import os
+    f = os.fdopen(params['passphrase'], 'rb')
+    params['passphrase'] = f.readline().rstrip('\r\n')
+    # No need to close f.
+  elif params['passphrase'] is ():  # Interactive prompt.
+    if is_batch:
+      raise SystemExit('usage: passphrase prompt conflicts with --batch mode')
+    params['passphrase'] = lambda: prompt_passphrase(do_encrypt and do_passphrase_twice)
+
+  inf, of = sys.stdin, sys.stdout
+  try:
+    if input_file == '-':
+      set_fd_binary(inf.fileno())
+    else:
+      inf = open(input_file, 'rb')
+    if output_file == '-':
+      set_fd_binary(of.fileno())
+    else:
+      if not is_yes_flag:
+        import os.path
+        # TODO(pts): Like gpg(1), don't clobber the output on a decrypt
+        # attempt with a bad passphrase or on a user abort during the
+        # passphrase prompt.
+        if os.path.exists(output_file):
+          # gpg(1) asks the user interactively after the passphrase prompt.
+          raise SystemExit('fatal: output file exists, not overwriting: %s' %
+                           output_file)
+      of = open(output_file, 'wb')
+    if do_encrypt:
+      encrypt_params.update(params)  # Shouldn't have common fields.
+      encrypt_params['buflog2cap'] = buflog2cap
+      if ('bzip2_compress_level' in encrypt_params and
+          encrypt_params.get('compress', '').lower() == 'bzip2'):
+        encrypt_params['compress_level'] = encrypt_params.pop('bzip2_compress_level')
+      # Defaults in GPG <2.1, including 1.4.18.
+      #encrypt_params.setdefault('cipher', 'sha256')
+      #encrypt_params.setdefault('compress', 'none')
+      #encrypt_params.setdefault('compress_level', 9)
+      #encrypt_params.setdefault('do_mdc', False)
       if is_file_class:
-        f = GpgSymmetricFileReader(inf.read, 'rb', **params)
+        f = GpgSymmetricFileWriter(of.write, 'wb', **encrypt_params)
         try:
-          #of.write(f.read()); return  # Works but uses much memory.
           while 1:
-            data = f.read(bufcap)
+            data = inf.read(bufcap)
             if not data:
               break
-            of.write(data)
+            f.write(data)
         finally:
           f.close()
       else:
-        decrypt_symmetric_gpg(inf.read, of, **params)
-    except BadPassphraseError, e:
-      msg = str(e)
-      sys.stderr.write('fatal: %s%s\n' % (msg[0].lower(), msg[1:].rstrip('.')))
-      sys.exit(2)
+        encrypt_symmetric_gpg(inf.read, of, **encrypt_params)
+    else:
+      try:
+        if is_file_class:
+          f = GpgSymmetricFileReader(inf.read, 'rb', **params)
+          try:
+            #of.write(f.read()); return  # Works but uses much memory.
+            while 1:
+              data = f.read(bufcap)
+              if not data:
+                break
+              of.write(data)
+          finally:
+            f.close()
+        else:
+          decrypt_symmetric_gpg(inf.read, of, **params)
+      except BadPassphraseError, e:
+        msg = str(e)
+        sys.stderr.write('fatal: %s%s\n' % (msg[0].lower(), msg[1:].rstrip('.')))
+        sys.exit(2)
+  finally:
+    try:
+      if of is not sys.stdout:
+        of.close()
+    finally:
+      if inf is not sys.stdin:
+        inf.close()
 
 
 if __name__ == '__main__':
