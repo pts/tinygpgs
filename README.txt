@@ -1,12 +1,12 @@
-tinygpgs: symmetric key encryption tool compatible with GPG
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-tinygpgs is a fast and standalone Python 2 script and library for doing
-symmetric key encryption and decryption using the OpenPGP file format
-compatible with GPG (GnuPG).
+tinygpgs: symmetric key encryption compatible with GPG in Python
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tinygpgs is a fast library and standalone Python 2 script for doing
+symmetric key (passphrase-based) encryption and decryption using the OpenPGP
+file format compatible with GPG (GnuPG).
 
 Usage:
 
-  $ ./tinygpgs -c <FILE.bin >FILE.bin.gpg   # Encrypt.
+  $ ./tinygpgs -c FILE.bin                  # Encrypt.
   $ ./tinygpgs -d <FILE.bin.gpg >FILE2.bin  # Decrypt.
   $ cmp FILE.bin FILE2.bin
 
@@ -64,8 +64,8 @@ Dependencies:
 * Only for interactive passphrase prompts, the standard Python module
   getpass. (Use --passphrase or similar to avoid the prompt.)
 
-tinygpgs is free software, MIT license. There is NO WARRANTY. Use at your
-risk.
+tinygpgs is free software released under the MIT license. There is NO
+WARRANTY. Use at your risk.
 
 Default encryption settings:
 
