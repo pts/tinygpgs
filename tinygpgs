@@ -2852,7 +2852,7 @@ def get_encrypt_symmetric_gpg_params(
     raise ValueError('Invalid s2k mode: %r' % (s2k_mode,))
   if count < 0:
     raise ValueError('s2k count must be nonnegative, got: %d' % count)
-  if compress_algo == 0:
+  if compress_algo == 0 or compress_level <= 0:
     ze = None
   elif compress_algo == 1:
     import zlib  # ImportError: no flate decompressor in Python.
