@@ -3620,7 +3620,7 @@ def GpgSymmetricFile(filename, mode, *args, **kwargs):
 def usage(argv0):
     sys.stderr.write(
         'tinygpgs: symmetric key encryption tool compatible with GPG\n'
-        'This is free software, GNU GPL >=2.0. '
+        'This is free software, MIT license. '
         'There is NO WARRANTY. Use at your risk.\n'
         'Encryption usage: %s -c [<flag> ...] <FILE.bin >FILE.bin.gpg\n'
         'Decryption usage: %s -d [<flag> ...] <FILE.bin.gpg >FILE.bin\n' %

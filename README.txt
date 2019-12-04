@@ -64,7 +64,7 @@ Dependencies:
 * Only for interactive passphrase prompts, the standard Python module
   getpass. (Use --passphrase or similar to avoid the prompt.)
 
-tinygpgs is free software, GNU GPL >=2.0. There is NO WARRANTY. Use at your
+tinygpgs is free software, MIT license. There is NO WARRANTY. Use at your
 risk.
 
 Default encryption settings:
