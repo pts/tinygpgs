@@ -3748,7 +3748,7 @@ def main(argv):
     elif do_encrypt and arg == '--literal-type':
       encrypt_params['literal_type'] = get_flag_arg(argv, i)
       i += 1
-    elif do_encrypt and arg == 'mtime':
+    elif do_encrypt and arg == '--mtime':
       encrypt_params['mtime'] = get_flag_arg_int(argv, i)
       i += 1
     else:
