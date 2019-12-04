@@ -14,37 +14,37 @@ Features:
 
 * fast: decrypts <1.26 times slower than gpg(1), and encrypts <1.37 times
   slower than gpg(1), see section ``Speed'' below.
+* tiny: the full-featured standalone command-line tool is smaller than 50
+  KiB (minified and ZIP-compressed), and it contains all the GPG ciphers and
+  hashes as Python code
 * all ciphers and hashes: supports all ciphers and hashes in the OpenPGP
-  spec, including those which PyCrypo doesn't support.
+  spec, including those which PyCrypto doesn't support.
 * small, constant memory usage: code + bzip2 decompression dictionary
   and output buffer (can be serveral MiBs) + <128 KiB buffers.
 * interoperability: both encryption and decryption works with files to and
   from gpg(1), checked versions 1.0.6, 1.4.1, 1.4.18, 2.1.18, 2.2.17.
-* tool compatibility: command-line flags compatible with gpg(1), moslty
+* tool compatibility: command-line flags compatible with gpg(1), mostly
   with the same defaults.
 * minimal dependencies: Works out-of-the-box with standard Python modules,
   but becomes much faster if PyCrypto is installed.
 * any Python 2: works with any Python 2.4, 2.5, 2.6 or 2.7.
 * no regexps: the implementation doesn't use regexps, thus avoiding speed
   (and potential catastrophic speed) issues
-* binary mode: always works in binary mode, doesn't do any coversion on
+* binary files: always opens files in binary mode, doesn't do any coversion on
   the plaintext (not even when decrypting, this is a difference from GPG)
 
 Planned features:
 
-* encryption: Make it more configurable with command-line flags,
-  as a replacement of `gpg --symmetric' == `gpg -c'.
 * Python 3: Make it work with Python >=3.5 (e.g. Debian 9) as well, keeping
   Python 2 compatibility.
-* docs: Add documentation and help.
-* Python library: Upload it to PyPI, make `pip install tinygpgs' work.
+* docs: Add full documentation for the file class API.
 
 Explicit non-features:
 
 * asymmetric (public key) encryption
 * asymmetric (public key) signing
 * gpg-agent support (e.g. storing passphrases in the agent)
-* key management: ~/.gnupg/pubring.gpg and ~/.gnupg/secring.pgp
+* key management: ~/.gnupg/pubring.gpg and ~/.gnupg/secring.gpg
 * asymmetric key (keypair) generation
 * trust model
 
@@ -82,6 +82,55 @@ Default encryption settings:
 * --compress-level 6
 * --force-mdc (The default of GPG depends on other flags.)
 * --no-armor
+
+Installation as a standalone command-line tool
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+If you have Python 2 (preferably with PyCrypto) installed, you can download
+and use a the single-file, standalone command-line tool from
+https://raw.githubusercontent.com/pts/tinygpgs/master/tinygpgs.single , make
+it executable, and rename (or symlink) it to tinygpgs.
+
+FYI to install Python 2 with PyCrypto on Debian-based Linux systems:
+
+  $ sudo apt-get install python-pycrypto
+
+Then on Linux you can download and use tinygpgs like this:
+
+  $ wget -O tinygpgs.single https://raw.githubusercontent.com/pts/tinygpgs/master/tinygpgs.single 
+  $ chmod +x tinygpgs.single
+  $ ln -s tinygpgs.single tinygpgs
+  $ ./tinygpgs
+
+Alternatively, on macOS:
+
+  $ curl -Lo tinygpgs.single https://raw.githubusercontent.com/pts/tinygpgs/master/tinygpgs.single
+  $ chmod +x tinygpgs.single
+  $ ln -s tinygpgs.single tinygpgs
+  $ ./tinygpgs
+
+You can install tinygpgs by copying the file (and the symlink) to somewhere
+on your $PATH.
+
+You can also use tinygpgs.single on Windows. After renaming it to tinygpgs,
+run:
+
+  $ python tinygpgs
+
+Installation as a Python library
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+If you have Python 2 already installed, just run this command (maybe with
+sudo to install for all users):
+
+  $ python -m pip install tinygpgs pycrypto
+
+To use the command-line tool, run it as `python -m tinygpgs' instead of
+`./tinygpgs'.
+
+Using the file class API in the Python library
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Install the Python library first, then see in
+https://github.com/pts/tinygpgs/blob/master/tinygpgs.rst how to use the
+file class API from your Python code.
 
 Tools for decrypting symmetric key GPG message
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

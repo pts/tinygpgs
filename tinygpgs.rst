@@ -72,7 +72,7 @@ Installation
 ------------
 To get the library, run this::
 
-    $ pip install tinygpgs pycrypto
+    $ python -m pip install tinygpgs pycrypto
 
 Please note that tinygpgs works without *pycrypto* as well, but with
 *pycrypto* it works much faster, even comparable with gpg(1): less than 1.37
