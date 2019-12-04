@@ -11,13 +11,17 @@ exec python -- ${1+"$@"}; exit 1
 
 This script need Python 2.4, 2.5, 2.6 or 2.7. Python 3.x won't work.
 
-Typical usage: tinygpgs -d <FILE.bin.gpg >FILE.bin
+This is a small and fast Python 2.x tool to encrypt and decrypt OpenPGP data
+(output of `gpg c' and `gpg --symmetric') with symmetric key.
 
-Simple Python 2.x tool to decrypt OpenPGP data encrypted with symmetric key
-(output of `gpg -c' and `gpg --symmetric'), using crypto in PyCrypto.
+Typical encryption usage: tinygpgs -c FILE.bin
 
-Requires standard Python modules only, but becomes much faster (<1.26
-times slower than gpg(1)) if PyCrypto gets installed.
+Typical decryption usage: tinygpgs -d FILE.bin.gpg >FILE.bin
+
+See more inf on: https://github.com/pts/tinygpgs
+
+This script requires standard Python modules only, but becomes much faster
+(<1.26 times slower than gpg(1)) if PyCrypto gets installed.
 
 All ciphers and hashes defined in the OpenPGP RFC
 (https://tools.ietf.org/html/rfc4880) are supported.
@@ -25,10 +29,8 @@ All ciphers and hashes defined in the OpenPGP RFC
 
 # !! Add tests for ciphers and hashes.
 # !! Add Python 3 support.
-# !! Add help and docs.
 # !! Add warning if slow becaue of Python hash or cipher.
 # !! Document encryptedfile and other Python modules.
-# !! Add compatible class API with encryptedfile.
 
 import itertools
 import struct
@@ -3617,16 +3619,87 @@ def GpgSymmetricFile(filename, mode, *args, **kwargs):
 
 # --- Command-line parsing and main().
 
+FLAG_DOC = r"""
+Encryption and decryption flags:
 
-def usage(argv0):
-    sys.stderr.write(
-        'tinygpgs: symmetric key encryption tool compatible with GPG\n'
-        'This is free software, MIT license. '
-        'There is NO WARRANTY. Use at your risk.\n'
-        'Encryption usage: %s -c [<flag> ...] <FILE.bin >FILE.bin.gpg\n'
-        'Decryption usage: %s -d [<flag> ...] <FILE.bin.gpg >FILE.bin\n' %
-        (argv0, argv0))
-    sys.exit(1)
+* --pinentry-mode <value>: Value must be loopback. Otherwise ignored for PGP
+  2.x compatibility.
+* --slow-cipher: Use the slow, pure Python implementation of the ciphers.
+* --no-slow-cipher: Use the fast, C extension implementation (PyCrypto) of the
+  ciphers, if available. Otherwise, use the slow, pure Python implementation.
+* --slow-hash: Use the slow, pure Python implementation of the hashes.
+* --no-slow-hash: Use the fast, C extension implementation (PyCrypto) of the
+  hashes, if available. Otherwise, use the slow, pure Python implementation.
+* --file-class: Use the GpgSymmetricFile* class API to do the work. It's a bit
+  slower than the function-based API, so it's not recommended for regular use.
+* --no-file-class: Use the function API to do the work.
+* --batch: Don't ask the user. Fail if no passphrase given on the command line.
+* --no-batch: Ask the user if needed. Typically the passphrase is asked.
+* --yes: Auto-answer yes to questions. Will overwrite existing output files.
+* --no: Don't answer yes to questions. Will abort if the output file already
+  exists, and will keep it intact.
+* --quiet (-q, --no-show-info): Don't show file parameters on stderr.
+* --verbose (-v, --show-info): Show file parameters on stderr.
+* --show-session-key: Show the session key (block cipher key) on stderr.
+  Insecure, should be used for debugging or during coercion only.
+* --no-show-session-key: Don't show the session key on stderr. Default.
+* --passphrase <pass>: Use the specified passphrase. This
+  flag is insecure (because it adds the passphrase to your shell history),
+  please don't specify it, but type the passphrases interactively or use
+  --passphrase-file ... or --passphrase-fd ... instead.
+* --passphrase-file <file>: Read the first line of <file> and use it (without
+  the trailing line breaks) as passphrase.
+* --passphrase-fd <fd>: Read the first line from file descriptor <fd> (e.g. 0
+  for stdin), and use it (without the trailing line breaks) as passphrase.
+  Be careful: if stdin is used and it's a TTY, it will echo the passphrase.
+* --passphrase-repeat <n>: If <n> is more than 1, ask the passphrase twice
+  before encryption. Doesn't affect decryption.
+* --bufcap <n>: Use buffer size of (approximately) <n> throughout, and also use
+  it as GP partial packet size. <n> must be a power of 2 at least 512. The
+  default is 8192.
+* --output (-o) <file>: Write the output to <file> instead of stdout.
+
+Encryption-only flags:
+
+* --cipher-algo <algo>: Use the specified encryption algorithm. Values:
+  idea, 3des (des3), cast5, blowfish, aes-128, aes-192, aes-256,
+  twofish-256, des, twofish-128.
+* --digest-algo <algo>: Use the specified hash for string-to-key. Values:
+  md5, sha1, ripemd160, sha256, sha384, sha512, sha224.
+* --compress-algo <algo>: Use the specified compression algorithm. Values:
+  none (uncompressed), zlib, zlib, bzip2.
+* --compress-level <n>: 0: disable compression, 1: fastest, low effort
+  compression, ..., 6: default compression effort, ..., 9: slowest compression.
+* --bzip2-compress-level <n>: Like --compress-level ..., but applies only if
+  --compress-algo bzip2 is active.
+( -a (--armor): Wrap output in ASCII armor (header and Base64 encoding).
+* --no-armor: Don't wrap output in ASCII armor.
+* --s2k-mode <n>. Use the specified string-to-key mode. Values:
+  0: simple, 1: 1: salted, 3: iterated-salted.
+* --s2k-count <n>: Run the hash over approximately <n> bytes for --s2k-mode 3.
+* --force-mdc: Enable appending of modification-detection code (MDC, hash,
+  message digest). Default.
+* --disable-mdc: Omit the modification-detection code from the output.
+* --plain-filename <file>: Store the specified filename in the output.
+* --literal-type <c>: Store the specified file type in the output. The value
+  b indicates binary, other values are not recommended. No matter this flag
+  value, all files are treated as binary.
+* --mtime <mtime>: Store the specified last modification time in the output.
+  The value is an integer, the Unix timestamp. The default is 0.
+"""
+
+def usage(argv0, do_flags=False):
+  flag_doc = FLAG_DOC * bool(do_flags)
+  if flag_doc.startswith('\n '):
+    flag_doc = flag_doc.replace('\n ', '\n')
+  sys.stderr.write(
+      'tinygpgs: symmetric key encryption tool compatible with GPG\n'
+      'This is free software, MIT license. '
+      'There is NO WARRANTY. Use at your risk.\n'
+      'encryption usage: %s -c [<flag> ...] [FILE.bin]\n'
+      'decryption usage: %s -d [<flag> ...] FILE.bin.gpg >FILE.bin\n'
+      'https://github.com/pts/tinygpgs\n%s' %
+      (argv0, argv0, flag_doc))
 
 
 def get_flag_arg(argv, i):
@@ -3659,8 +3732,9 @@ def read_passphrase_from_fd(fd):
 
 
 def main(argv):
-  if len(argv) < 2 or argv[1] == '--help':
+  if len(argv) < 2:
     usage(argv[0])
+    sys.exit(1)
   argv = list(argv)
   is_file_class = is_batch = do_passphrase_twice = is_yes_flag = False
   output_file = input_file = None
@@ -3675,8 +3749,11 @@ def main(argv):
     do_encrypt = False
   elif argv[1] in ('-e', '--encrypt', '-s', '--sign', '--verify'):  # Like gpg(1).
     raise SystemExit('usage: public-key cryptography not supported: %s' % argv[1])
+  elif argv[1] == '--help':
+    return usage(argv[0], True)
   else:
     usage(argv[0])
+    sys.exit(1)
   i = 2
   while i < len(argv):
     arg = argv[i]
@@ -3806,7 +3883,8 @@ def main(argv):
   elif params['passphrase'] is ():  # Interactive prompt.
     if is_batch:
       raise SystemExit('usage: passphrase prompt conflicts with --batch mode')
-    params['passphrase'] = lambda: prompt_passphrase(do_encrypt and do_passphrase_twice)
+    params['passphrase'] = lambda is_twice=do_encrypt and do_passphrase_twice: (
+        prompt_passphrase(is_twice))
 
   inf, of = sys.stdin, sys.stdout
   try:
