@@ -11,6 +11,9 @@ import sys
 # !! Add warning if slow becaue of Python hash or cipher.
 # !! Document encryptedfile and other Python modules.
 
+# This line is read by setup.py.
+VERSION = '0.11'
+
 # --- Passphrase prompt.
 
 
@@ -119,13 +122,13 @@ def usage(argv0, do_flags=False):
   if flag_doc.startswith('\n '):
     flag_doc = flag_doc.replace('\n ', '\n')
   sys.stderr.write(
-      'tinygpgs: symmetric key encryption tool compatible with GPG\n'
+      'tinygpgs v%s: symmetric key encryption tool compatible with GPG\n'
       'This is free software, MIT license. '
       'There is NO WARRANTY. Use at your risk.\n'
       'encryption usage: %s -c [<flag> ...] [FILE.bin]\n'
       'decryption usage: %s -d [<flag> ...] FILE.bin.gpg >FILE.bin\n'
       'https://github.com/pts/tinygpgs\n%s' %
-      (argv0, argv0, flag_doc))
+      (VERSION, argv0, argv0, flag_doc))
 
 
 def get_flag_arg(argv, i):
