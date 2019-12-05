@@ -385,17 +385,22 @@ class EncryptedFile(GpgSymmetricFileWriter):
 
   Implements the same interface as class EncryptedFile in EncryptedFile.py
   (https://github.com/thenoviceoof/encryptedfile/blob/master/encryptedfile/EncryptedFile.py)
-  in https://pypi.org/project/encryptedfile/ , version 1.1.
+  in https://pypi.org/project/encryptedfile/ , version 1.1.1, but it's much faster.
 
   Example usage:
 
     import getpass
-    f = EncryptedFile('FILE.bin.gpg', passphrase=getpass.getpass())
+    f = EncryptedFile('FILE.bin.gpg', mode='wb', passphrase=getpass.getpass())
     try:
       f.write('Hello, World!\n')
       f.write('This is the end.\n')
     finally:
       f.close()
+
+  This class implements newline conversion by default (mode='w', there is
+  no 'b' in it). If you don't need that, you should use the
+  GpgSymmetricFileWriter class instead, it's even faster than this
+  EncryptedFile.
 
   The only incompatibility is with writing line breaks in multiple chunks in
   text mode, e.g. for .write('A\r'), .write('\nB'), the user may be
@@ -457,7 +462,7 @@ class EncryptedFile(GpgSymmetricFileWriter):
       HASH_SHA224: lambda data='': new_hash('sha224', data),
   }
 
-  __slots__ = ('file', '_is_text')
+  __slots__ = ('file', '_is_text', '_prefix')
 
   def __init__(
       self, file_obj, passphrase, mode='w', iv=None, salt=None,
@@ -514,6 +519,7 @@ class EncryptedFile(GpgSymmetricFileWriter):
     while buffer_size > (1 << buflog2cap):
       buflog2cap += 1
     encrypt_params['buflog2cap'] = buflog2cap
+    self._prefix = ''
     if 'b' in mode:
       encrypt_params['literal_type'], self._is_text = 'b', False
     else:
@@ -528,7 +534,9 @@ class EncryptedFile(GpgSymmetricFileWriter):
     self.close()
 
   def writelines(self, lines):
-    self.write(''.join(lines))
+    write_func = self.write
+    for line in lines:
+      write_func(line)
 
   def read(self, *args, **kwargs):
     raise NotImplementedError()
@@ -549,6 +557,9 @@ class EncryptedFile(GpgSymmetricFileWriter):
   def close(self):
     if self.file.closed:
       return
+    if self._is_text and self._prefix:
+      assert self._prefix == '\r'
+      GpgSymmetricFileWriter.write(self, '\r\n')
     GpgSymmetricFileWriter.close(self)
     if self.file:
       self.file.close()
@@ -562,9 +573,11 @@ class EncryptedFile(GpgSymmetricFileWriter):
     if self._is_text:
       if isinstance(data, unicode):
         data = data.encode('utf-8')
-      # This is a simple, low-effort conversion of line breaks to '\r\n',
-      # without using regexps. It works correctly except for
-      # .write_text('A\r'), .write_text('\nB'), for which the user may be
-      # expecting 'A\r\nB', but actually 'A\r\r\nB' will be written.
-      data = data.replace('\r\n', '\n').replace('\r', '\n').replace('\n', '\r\n')
+      data, self._prefix = self._prefix + data, ''
+      if data:
+        if data[-1] == '\r':
+          data, self._prefix = data[:-1], '\r'
+        # This is a simple, low-effort, but correct conversion of line breaks to '\r\n',
+        # without using regexps.
+        data = data.replace('\r\n', '\n').replace('\r', '\n').replace('\n', '\r\n')
     GpgSymmetricFileWriter.write(self, data)
