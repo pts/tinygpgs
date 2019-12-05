@@ -246,6 +246,11 @@ Encryption (and compression) benchmark measurements on Linux amd64, Debian
   info: GPG symmetric encrypt cipher_algo=aes-256 is_py_cipher=0 s2k_mode=iterated-salted digest_algo=sha1 is_py_digest=0 count=65536 len(salt)=8 len(encrypted_session_key)=0 do_mdc=1 len(session_key)=32
   8.828s user
 
+  <FAST-ENCRYPTION>, without MDC, without compression. To be compared with encryptedfile.
+  $ time python2.7 tinygpgs -c --cipher-algo aes-256 --passphrase abc --disable-mdc --compress-algo none <hellow5long.bin >hellowc5long.bin.gpg
+  info: GPG symmetric encrypt cipher_algo=aes-256(9) is_py_cipher=0 s2k_mode=iterated-salted(3) s2k_digest_algo=sha1(2) is_py_digest=0 s2k_count=65536 len(s2k_salt)=8 compress_algo=uncompressed(0) compress_level=6 len(encrypted_session_key)=0 do_mdc=0 len(session_key)=32 bufcap=8192 literal_type='b' plain_filename='' mtime=0 do_add_ascii_armor=0
+  0m2.336s user
+
   <FAST-ENCRYPTION>, with GpgSymmetricFileWriter file class API.
   $ time python2.7 tinygpgs -c --file-class --cipher-algo aes-256 --passphrase abc <hellow5long.bin >hellowc5long.bin.gpg
   info: GPG symmetric encrypt cipher_algo=aes-256 is_py_cipher=0 s2k_mode=iterated-salted digest_algo=sha1 is_py_digest=0 count=65536 len(salt)=8 len(encrypted_session_key)=0 do_mdc=1 len(session_key)=32
@@ -279,8 +284,21 @@ Encryption (and compression) benchmark measurements on Linux amd64, Debian
   $ time gpg -c --pinentry-mode loopback --cipher-algo aes-256 --digest-algo sha1 --s2k-count 65536 --compress-algo zip --compress-level 6 --force-mdc --passphrase abc <hellow5long.bin >hellowc5long.bin.gpg
   6.444s user
 
-  encryptedfile: This is very-very slow.
-  $ time python -c 'import encryptedfile; f = encryptedfile.EncryptedFile("hellow5longef.bin.gpg", "abc", encryption_algo=encryptedfile.EncryptedFile.ALGO_AES256); f.write(open("hellow5long.gpg", "wb").read()); f.close()'
+  encryptedfile in text mode: This is very-very slow.
+  $ time python -c 'import encryptedfile; f = encryptedfile.EncryptedFile("hellow5longef.bin.gpg", "abc", encryption_algo=encryptedfile.EncryptedFile.ALGO_AES256); f.write(open("hellow5long.gpg", "rb").read()); f.close()'
   1847.260s user
+
+  encryptedfile in binary mode: This is very-very slow, possibly because of unnecessary string concatenations.
+  $ time python -c 'import encryptedfile; f = encryptedfile.EncryptedFile("hellow5longef.bin.gpg", "abc", mode="wb", encryption_algo=encryptedfile.EncryptedFile.ALGO_AES256); f.write(open("hellow5long.gpg", "rb").read()); f.close()'
+  1814.316s
+
+  encryptedfile in binary mode, no compression.
+  $ time python -c 'import encryptedfile; f = encryptedfile.EncryptedFile("hellow5longef.bin.gpg", "abc", mode="wb", encryption_algo=encryptedfile.EncryptedFile.ALGO_AES256); inf = open("../hellow5long.bin", "rb")
+while 1:
+  data = inf.read(8192)
+  if not data: break
+  f.write(data)
+f.close()'
+  0m4.200s user
 
 __END__
