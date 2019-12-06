@@ -287,8 +287,11 @@ def main(argv, zip_file=None):
   if input_file is None:
     input_file = '-'
   if output_file is None:
-    if do_encrypt and input_file != '-':
-      output_file = input_file + '.gpg'  # gpg(1).
+    if do_encrypt and input_file != '-':  # gpg(1).
+      if encrypt_params.get('do_add_ascii_armor'):
+        output_file = input_file + '.asc'
+      else:
+        output_file = input_file + '.gpg'
     else:
       output_file = '-'
   if bufcap < 1 or bufcap & (bufcap - 1):
