@@ -1310,7 +1310,7 @@ def get_gpg_armor_trailer(abuf, asize, acrc, _b2a):
     if not adata.endswith('\n'):
       output.append('\n')
   output.append('=')
-  output.append(_b2a(struct.pack('>L', acrc)[1:]))
+  output.append(_b2a(struct.pack('>L', acrc)[1:]).rstrip('\n'))
   output.append('\n-----END PGP MESSAGE-----\n')
   return ''.join(output)
 
