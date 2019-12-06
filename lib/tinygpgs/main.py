@@ -12,7 +12,7 @@ import sys
 # !! Document encryptedfile and other Python modules.
 
 # This line is read by setup.py.
-VERSION = '0.11'
+VERSION = '0.12'
 
 # --- Passphrase prompt.
 
