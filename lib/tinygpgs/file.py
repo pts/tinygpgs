@@ -242,7 +242,7 @@ class GpgSymmetricFileWriter(object):
     if self._b2a:
       abuf, asize, acrc, _b2a = self._abuf, self._asize, self._acrc, self._b2a
       self._abuf, self._asize, self._acrc, self._b2a = (), 0, (), ()
-      acrc = crc24(data, crc24(header, acrc))
+      acrc = _crc24(data, _crc24(header, acrc))
       abuf.append(header)
       abuf.append(data)
       asize += len(header) + len(data)
@@ -253,7 +253,7 @@ class GpgSymmetricFileWriter(object):
         fwrite(_b2a(_buffer(adata, i, 48)))  # Contains trailing '\n'.
       abuf[:] = (adata[lal:],)
       adata, asize = (), lam
-      fwrite(get_gpg_armor_trailer(abuf, asize, acrc, _b2a))
+      fwrite(gpgs.get_gpg_armor_trailer(abuf, asize, acrc, _b2a))
     else:
       fwrite(header)
       fwrite(data)
