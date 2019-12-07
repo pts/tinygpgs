@@ -61,6 +61,9 @@ Encryption and decryption flags:
   hashes, if available. Otherwise, use the slow, pure Python implementation.
 * --file-class: Use the GpgSymmetricFile* class API to do the work. It's a bit
   slower than the function-based API, so it's not recommended for regular use.
+* --file-class-big: Use the GpgSymmetricFile* class API with a single call
+  to .read() and .write(...) to do the work. This is not recommended for general
+  use, because it may use a lot of memory.
 * --no-file-class: Use the function API to do the work.
 * --batch: Don't ask the user. Fail if no passphrase given on the command line.
 * --no-batch: Ask the user if needed. Typically the passphrase is asked.
@@ -170,7 +173,8 @@ def main(argv, zip_file=None):
     usage(argv[0])
     sys.exit(1)
   argv = list(argv)
-  is_file_class = is_batch = do_passphrase_twice = is_yes_flag = False
+  is_batch = do_passphrase_twice = is_yes_flag = False
+  file_class_mode = 0
   output_file = input_file = None
   bufcap = 8192
   params = {}
@@ -206,7 +210,9 @@ def main(argv, zip_file=None):
     elif arg == ('--slow-hash', '--no-slow-hash'):
       params['is_slow_hash'] = is_yes
     elif arg in ('--file-class', '--no-file-class'):
-      is_file_class = is_yes
+      file_class_mode = int(is_yes)
+    elif arg == '--file-class-big':
+      file_class_mode = 2
     elif arg in ('--batch', '--no-batch'):  # gpg(1).
       is_batch = is_yes
     elif arg == '--yes':  # gpg(1).
@@ -354,15 +360,18 @@ def main(argv, zip_file=None):
       #encrypt_params.setdefault('compress_level', 9)
       #encrypt_params.setdefault('do_mdc', False)
       from tinygpgs import gpgs
-      if is_file_class:
+      if file_class_mode:
         from tinygpgs import file  # Lazy import to make startup (flag parsing) fast.
         f = file.GpgSymmetricFileWriter(of.write, 'wb', **encrypt_params)
         try:
-          while 1:
-            data = inf.read(bufcap)
-            if not data:
-              break
-            f.write(data)
+          if file_class_mode == 2:
+            f.write(inf.read())
+          else:
+            assert bufcap == f.bufcap
+            data = inf.read(f.write_hint)
+            while data:
+              f.write(data)
+              data = inf.read(f.write_hint)
         finally:
           f.close()
       else:
@@ -370,16 +379,18 @@ def main(argv, zip_file=None):
     else:
       from tinygpgs import gpgs
       try:
-        if is_file_class:
+        if file_class_mode:
           from tinygpgs import file
           f = file.GpgSymmetricFileReader(inf.read, 'rb', **params)
           try:
-            #of.write(f.read()); return  # Works but uses much memory.
-            while 1:
-              data = f.read(bufcap)
-              if not data:
-                break
-              of.write(data)
+            if file_class_mode == 2:
+              of.write(f.read())
+            else:
+              while 1:
+                data = f.read(bufcap)
+                if not data:
+                  break
+                of.write(data)
           finally:
             f.close()
         else:

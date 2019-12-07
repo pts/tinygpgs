@@ -97,11 +97,11 @@ class GpgSymmetricFileWriter(object):
   object.
   """
 
-  __slots__ = ('_f', '_fwrite', '_pbuf', '_psize', '_plitp', '_qbuf', '_qsize',
+  __slots__ = ('_f', '_fwrite', '_pbuf', 'write_hint', '_qbuf', '_qsize',
                '_qhc', '_cpre', '_bs', '_ze', '_ze_compress', '_mdc_obj',
                '_mdc_update', '_cfb_encrypt', '_packet_type', '_packet_header',
-               '_packet_hc', '_ciphp', '_bufcap', '_abuf', '_asize', '_acrc',
-               '_b2a', '_psizec', 'count')
+               '_packet_hc', '_ciphp', 'bufcap', '_abuf', '_asize', '_acrc',
+               '_b2a', 'count', 'first_write_hint')
 
   def __init__(self, filename, mode, *args, **kwargs):
     """Also pass passphrase=... You can pass .write method as filename."""
@@ -120,9 +120,9 @@ class GpgSymmetricFileWriter(object):
     self._bs, self._ze, self._mdc_obj, self._packet_type, self._packet_header = bs, ze, mdc_obj, packet_type, packet_header
     self._cpre, self._packet_hc, self._ciphp = packet_header, struct.pack('>B', 192 | packet_type), True  # Ciphertext buffer.
     self._cfb_encrypt = cfb_encrypt or gpgs.get_cfb_encrypt_func(encrypt_func, bs, fr)  # Slow, but works without PyCrypto.
-    self._bufcap = 1 << buflog2cap
-    if self._bufcap % bs:
-      raise ValueError('_pbufcap must be divisible by block size %d, got: %d' % (bs, self._bufcap))
+    self.bufcap = 1 << buflog2cap
+    if self.bufcap % bs:
+      raise ValueError('_pbufcap must be divisible by block size %d, got: %d' % (bs, self.bufcap))
     if mdc_obj:
       self._mdc_update = mdc_obj.update
     else:
@@ -143,12 +143,14 @@ class GpgSymmetricFileWriter(object):
       self._fwrite(header)
       self._abuf, self._asize, self._acrc, self._b2a = (), 0, (), ()
     self.count = 0  # Compatible with EncryptedFile.
-    self._pbuf, self._psize, self._plitp = [literal_header], len(literal_header), True  # Plaintext buffer.
-    self._psizec = self._psize  # Canary used in .close() to detect a partial .write().
-    self._qhc = struct.pack('>B', 224 | buflog2cap)
+    self._qhc = qhc = struct.pack('>B', 224 | buflog2cap)
+    self._pbuf, self.write_hint = ['\xcb' + qhc], self.bufcap  # Plaintext buffer.
     self._qbuf, self._qsize = [first_plaintext_chunk], len(first_plaintext_chunk)
-    self._flush_pbuf()
-    del header
+    self.write(literal_header)
+    self.count = 0  # Do it again, reset counter after .write above.
+    # To avoid some copies, the caller should call f.write(f.write_hint) all
+    # the time. After the first call, typically we'll get f.write_hint ==
+    # f.bufcap.
 
   def tell(self):
     return self.count
@@ -160,16 +162,19 @@ class GpgSymmetricFileWriter(object):
     65536 bytes). For maximum speed, use encrypt_symmetric_gpg instead.
     """
     if data:
-      self._psizec = psize = self._psize
-      self.count += len(data)
-      # If a KeyboardInterrupt happens between now and setting of
-      # self._psizec below, then `self._psize == self._psizec' will be fals
-      # in self.close().
-      self._psize = psize + len(data)
       self._pbuf.append(data)
-      if self._psize > self._bufcap:
-        self._flush_pbuf()
-      self._psizec = self._psize
+      self.count += len(data)
+      # Canary mechanism: if a KeyboardInterrupt happens between now and the
+      # end of the method, then self._pbuf and self.write_hint will not match,
+      # and self.close() won't call _done_pbuf. This is good, because
+      # self.close() is usually run in a `finally:' block, and we don't want
+      # that block to raise an exception, hiding the original exception in
+      # self._flush_buf.
+      prem = self.write_hint - len(data)
+      if prem <= 0:
+        self._flush_pbuf(prem)
+      else:
+        self.write_hint = prem
 
   def flush(self):
     """Flushes the backing file object.
@@ -185,35 +190,32 @@ class GpgSymmetricFileWriter(object):
     """Closes the file, flushing all data."""
     # .close() is not suitable as __del__, it refers to global variables.
     try:
-      if self._psize == self._psizec:
-        self._done_pbuf()
+      self._done_pbuf()
     finally:
       self._fwrite = ()
       if self._f:
         self._f.close();
         self._f = ()
-      self._pbuf, self._psize = (), 0  # Further .write()s will fail.
       self._qbuf, self._qsize = (), 0
       self._abuf, self._asize, self._acrc, self._b2a = (), 0, (), ()
       self._cpre = ()
       self._mdc_obj = self._mdc_update = self._ze = self._cfb_encrypt = ()
-      self._plitp = self._qhc = self._packet_header = None
+      self._qhc = self._packet_header = None
 
   def _done_pbuf(self, _pack=struct.pack, _crc24=gpgs.crc24, _glnph=gpgs.get_last_nonpartial_packet_header):
-    self._psizec = ()  # Ruin the canary to prevent .close() from calling again.
-    pbuf, psize = self._pbuf, self._psize
-    if pbuf is ():
-      raise ValueError('Duplicate call to _done_pbuf.')
-    if pbuf:
-      self._flush_pbuf()
-    data = ''.join(pbuf)
-    assert len(data) == psize
-    self._pbuf, pbuf, self._psize = (), (), 0
-    pbufx = _glnph(len(data), self._plitp and 11)
+    # Further .write()s will fail on tuple.append.
+    pbuf, prem, self._pbuf, self.write_hint, _bufcap = self._pbuf, self.write_hint, (), 0, self.bufcap
+    if not pbuf:
+      return  # Canary not found, don't flush.
+    lda = sum(len(s) for s in pbuf) - len(pbuf[0])
+    if prem != _bufcap - lda:
+      return  # Canary not found, don't flush.
+    pbuf[0] = _glnph(lda, len(pbuf[0]) > 1 and 11)
+    pbuf = ''.join(pbuf)
     qbuf, qsize = self._qbuf, self._qsize
-    qbuf.append(self._ze_compress(pbufx))
-    qbuf.append(self._ze_compress(data))
-    qsize += len(qbuf[-2]) + len(qbuf[-1])
+    qbuf.append(self._ze_compress(pbuf))
+    del pbuf  # Save memory.
+    qsize += len(qbuf[-1])
     if self._ze:
       qbuf.append(self._ze.flush())
       qsize += len(qbuf[-1])
@@ -258,31 +260,70 @@ class GpgSymmetricFileWriter(object):
       fwrite(header)
       fwrite(data)
 
-  def _flush_pbuf(self, _pack=struct.pack, _buffer=buffer):
-    _bufcap = self._bufcap
-    if self._psize >= _bufcap:
-      pbuf, psize, qbuf, ze_compress = self._pbuf, self._psize, self._qbuf, self._ze_compress
-      data = ''.join(pbuf)
-      assert len(data) == psize
-      j = psize - psize % _bufcap
-      for i in xrange(0, j, _bufcap):
-        # TODO(pts): Is it faster to do additional buffering before compression?
-        if self._plitp:
-          dataq = ze_compress('\xcb' + self._qhc)  # packet_type == 11.
-          self._plitp = False
-        else:
-          dataq = ze_compress(self._qhc)
-        if dataq:
-          qbuf.append(dataq)
-          self._qsize += len(dataq)
-        dataq = ze_compress(_buffer(data, i, _bufcap))
+  def _flush_pbuf(self, prem, _pack=struct.pack, _buffer=buffer):
+    if prem <= 0:
+      pbuf, qbuf, ze_compress, _bufcap, qhc = self._pbuf, self._qbuf, self._ze_compress, self.bufcap, self._qhc
+      if not prem:
+        # Avoiding this long copy and doing `for data in pbuf:' instead
+        # makes it a bit slower with bufcap == 8192. That's probably because
+        # calling ze_compress twice is slow.
+        data = ''.join(pbuf)  # Long copy.
+        assert prem == _bufcap - len(data) + len(pbuf[0])  # Consistency.
+        dataq = ze_compress(data)
         if dataq:
           qbuf.append(dataq)
           self._qsize += len(dataq)
         if self._qsize >= _bufcap:
           self._flush_qbuf()
-      pbuf[:], self._psize = [data[j:]], psize - j  # An empty string is OK here.
-
+        pbuf[:] = (qhc,)
+        self.write_hint = _bufcap  # Must be last for canary.
+      elif prem > -_bufcap:  # This is just speedup, could be commented out.
+        data = ''.join(pbuf)
+        assert prem == _bufcap - len(data) + len(pbuf[0])  # Consistency.
+        dataq = ze_compress(data[:prem])  # This doesn't work if prem == 0.
+        if dataq:
+          qbuf.append(dataq)
+          self._qsize += len(dataq)
+        if self._qsize >= _bufcap:
+          self._flush_qbuf()
+        pbuf[:] = (qhc, data[prem:])  # Long copy. It doesn't work if prem == 0.
+        self.write_hint = prem + _bufcap  # Must be last for canary.
+      else:
+        lda = sum(len(s) for s in pbuf) - len(pbuf[0])
+        assert prem == _bufcap - lda  # Consistency.
+        ldam = lda % _bufcap
+        #assert lda >= (_bufcap << 1)  # Follows from `prem > -_bufcap'.
+        datap = pbuf.pop()
+        i = _bufcap - (lda - len(datap))
+        assert 0 < i < _bufcap  # Only last one is too long.
+        #assert len(datap) - ldam - i == lda - _bufcap - ldam  # True but slow.
+        #assert not (len(datap) - ldam - i) % _bufcap  # True but slow.
+        pbuf.append(datap[:i])
+        dataq = ''.join(pbuf)
+        assert len(dataq) - len(pbuf[0]) == _bufcap  # Consistency.
+        dataq = ze_compress(dataq)
+        if dataq:
+          qbuf.append(dataq)
+          self._qsize += len(dataq)
+        if self._qsize >= _bufcap:
+          self._flush_qbuf()
+        for i in xrange(i, len(datap) - ldam, _bufcap):
+          dataq = ze_compress(qhc)
+          if dataq:
+            qbuf.append(dataq)
+            self._qsize += len(dataq)
+          dataq = ze_compress(_buffer(datap, i, _bufcap))
+          if dataq:
+            qbuf.append(dataq)
+            self._qsize += len(dataq)
+          if self._qsize >= _bufcap:
+            self._flush_qbuf()
+        if ldam:
+          pbuf[:] = (qhc, datap[-ldam:])  # Long copy, unavoidable.
+          self.write_hint = _bufcap - ldam  # Must be last for canary.
+        else:
+          pbuf[:] = (qhc,)
+          self.write_hint = _bufcap  # Must be last for canary.
   def _flush_qbuf(self):
     qbuf = self._qbuf
     data = ''.join(qbuf)
@@ -301,11 +342,11 @@ class GpgSymmetricFileWriter(object):
       self._qsize = ldbs
 
   def _add_encrypted(self, cdata, _crc24=gpgs.crc24):
-    cpre, _b2a, _bufcap, fwrite = self._cpre, self._b2a, self._bufcap, self._fwrite
+    cpre, _b2a, _bufcap, fwrite = self._cpre, self._b2a, self.bufcap, self._fwrite
     cpre += cdata  # Long copy. TODO(pts): Avoid it with multiple writes.
     del cdata
     lcpb = len(cpre) - len(cpre) % _bufcap
-    #if lcpb < _bufcap:  # May happen only if called from _done_pbuf.
+    #if lcpb < _bufcap:  # May happen only if called from .close().
     if _b2a:
       abuf, asize, acrc, _buffer = self._abuf, self._asize, self._acrc, buffer
       for i in xrange(0, lcpb, _bufcap):  # Usually only once.

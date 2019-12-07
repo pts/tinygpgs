@@ -254,7 +254,7 @@ Encryption (and compression) benchmark measurements on Linux amd64, Debian
   <FAST-ENCRYPTION>, with GpgSymmetricFileWriter file class API.
   $ time python2.7 tinygpgs -c --file-class --cipher-algo aes-256 --passphrase abc <hellow5long.bin >hellowc5long.bin.gpg
   info: GPG symmetric encrypt cipher_algo=aes-256 is_py_cipher=0 s2k_mode=iterated-salted digest_algo=sha1 is_py_digest=0 count=65536 len(salt)=8 len(encrypted_session_key)=0 do_mdc=1 len(session_key)=32
-  8.688s user
+  7.984s user
 
   <FAST-ENCRYPTION>, with ASCII armor. CRC24 calculation for the ASCII armor
   makes it very slow. Without the CRC24 update (resulting an invalid output
