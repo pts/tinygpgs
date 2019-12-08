@@ -192,18 +192,38 @@ def main(argv, zip_file=None):
   params['passphrase'] = ()
   params['show_info_func'] = show_info
   encrypt_params = {}
-  if argv[1] in ('-c', '--symmetric'):  # Like gpg(1).
-    do_encrypt = True
-  elif argv[1] in ('-d', '--decrypt'):  # Like gpg(1).
-    do_encrypt = False
-  elif argv[1] in ('-e', '--encrypt', '-s', '--sign', '--verify'):  # Like gpg(1).
-    raise SystemExit('usage: public-key cryptography not supported: %s' % argv[1])
-  elif argv[1] == '--help':
-    return usage(argv[0], True)
-  else:
+  public_key_crypto_flags = ('-e', '--encrypt', '-s', '--sign', '--verify')
+  public_key_crypto_pattern = 'usage: public-key cryptography not supported: %s'
+  common_flags = (
+      '--slow-cipher', '--no-slow-cipher', '--slow-hash', '--no-slow-hash',
+      '--file-class', '--no-file-class', '--file-class-big', '--batch',
+      '--no-batch', '--yes', '--no', '-q', '--quiet', '-v', '--verbose',
+      '--show-info', '--no-show-info', '--show-session-key',
+      '--no-show-session-key')
+  i, do_encrypt, pre_flags = 1, None, []
+  while i < len(argv):  # Scan for -c or -d.
+    arg = argv[i]
+    i += 1
+    if arg in ('-c', '--symmetric'):  # Like gpg(1).
+      do_encrypt = True
+      break
+    elif arg in ('-d', '--decrypt'):  # Like gpg(1).
+      do_encrypt = False
+      break
+    elif arg in public_key_crypto_flags:  # Like gpg(1).
+      raise SystemExit(public_key_crypto_pattern % arg)
+    elif arg in common_flags:
+      pre_flags.append(arg)
+    elif arg == '--help':
+      return usage(argv[0], True)
+    else:
+      i -= 1
+      break
+  if do_encrypt is None:
     usage(argv[0])
     sys.exit(1)
-  i = 2
+  pre_flags.extend(argv[i:])
+  argv, i = pre_flags, 0
   while i < len(argv):
     arg = argv[i]
     if arg == '-' or not arg.startswith('-'):
@@ -212,6 +232,10 @@ def main(argv, zip_file=None):
     is_yes = not arg.startswith('--no-')
     if arg == '--':
       break
+    elif arg in public_key_crypto_flags:  # Like gpg(1).
+      raise SystemExit(public_key_crypto_pattern % arg)
+    elif arg in ('-c', '--symmetric', '-d', '--decrypt'):
+      raise SystemExit('usage: flag must be at the beginning: %s' % arg)
     elif arg == '--pinentry-mode':  # gpg(1).
       if get_flag_arg(argv, i) != 'loopback':
         raise SystemExit('usage: invalid flag value for --pinentry-mode: ' + argv[i])
