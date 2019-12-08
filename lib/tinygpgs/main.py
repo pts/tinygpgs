@@ -2,14 +2,25 @@
 
 import sys
 
+from tinygpgs.pyx import ensure_binary, integer_types, is_stdin_text
+
 # Here we don't import anything from tinygpgs, to make --help and flag
 # parsing fast. We do lazy imports later as needed.
 
 # !! gpg -d: WARNING: message was not integrity protected
-# !! Add tests for ciphers and hashes.
-# !! Add Python 3 support.
-# !! Add warning if slow becaue of Python hash or cipher.
+# !! Add warning if slow because of Python hash or cipher.
 # !! Document encryptedfile and other Python modules.
+# !! Check proper error message in Python 2.3, 2.2, 2.1 and 2.0.
+# !! Add bzip2 compression and decompression using `import subprocess'. This helps with `sudo apt-get install python3.5-minimal'.
+# !! Verify and improve Win32 support (binary mode etc.).
+# !! doc: py3 syntax conversion: print statement
+# !! doc: py3 syntax conversion: octal literals: 0123 is SyntaxError, but 0123e6 is OK.
+# !! doc: py3 conversion: basic level: just display an error message on Python 3, octal still has to be converted
+# !! doc: py3 conversion: b'%d' % 42 doesn't work in Python 3.4.
+# !! doc: py3 conversion: how to detect Python 3: if type(zip()) is not list:  # Python 3.
+# !! doc: py3 conversion: type(memoryview(b'x')[0]) == type(b'') is different in Python 3.2 (True) and 3.3 (False).
+# !! doc: py3 syntax conversion: no u'...' in Python 3.2, so no u'...' in tinygpgs.
+# !! doc: py3 warnings SUXX:   if size is ():  # SyntaxWarning: "is" with a literal. Did you mean "=="?
 
 # This line is read by setup.py.
 VERSION = '0.12'
@@ -157,9 +168,9 @@ def read_passphrase_from_fd(fd):
   output = []
   while 1:
     c = os.read(fd, 1)  # Don't read too much.
-    if not c or c in '\r\n':
+    if not c or c in b'\r\n':
       # No need for os.close(fd).
-      return ''.join(output)
+      return b''.join(output)
     output.append(c)
 
 
@@ -315,21 +326,25 @@ def main(argv, zip_file=None):
     # We need binary mode for 8-bit accurate s2k.
     try:
       f = open(params['passphrase'][0], 'rb')
-    except IOError, e:
+    except IOError as e:
       raise SystemExit('fatal: error opening the passphrase file: %s' % e)
     try:
-      params['passphrase'] = f.readline().rstrip('\r\n')
+      params['passphrase'] = f.readline().rstrip(b'\r\n')
     finally:
       f.close()
-  elif isinstance(params['passphrase'], (int, long)):  # File descroptor.
+  elif isinstance(params['passphrase'], integer_types):  # File descroptor.
     params['passphrase'] = read_passphrase_from_fd(params['passphrase'])
-  elif params['passphrase'] is ():  # Interactive prompt.
+  elif params['passphrase'] == ():  # Interactive prompt.
     if is_batch:
       raise SystemExit('usage: passphrase prompt conflicts with --batch mode')
     params['passphrase'] = lambda is_twice=do_encrypt and do_passphrase_twice: (
         prompt_passphrase(is_twice))
 
-  inf, of = sys.stdin, sys.stdout
+  if is_stdin_text:
+    import os
+    inf, of = os.fdopen(0, 'rb'), os.fdopen(1, 'wb')
+  else:
+    inf, of = sys.stdin, sys.stdout
   try:
     if input_file == '-':
       set_fd_binary(inf.fileno())
@@ -395,7 +410,7 @@ def main(argv, zip_file=None):
             f.close()
         else:
           gpgs.decrypt_symmetric_gpg(inf.read, of, **params)
-      except gpgs.BadPassphraseError, e:
+      except gpgs.BadPassphraseError as e:
         msg = str(e)
         sys.stderr.write('fatal: %s%s\n' % (msg[0].lower(), msg[1:].rstrip('.')))
         sys.exit(2)

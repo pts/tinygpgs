@@ -4,6 +4,8 @@ import struct
 
 from tinygpgs import gpgs
 
+from tinygpgs.pyx import check_binary, buffer, xrange, ensure_binary, text_type, callable
+
 
 class GpgSymmetricFileReader(object):
   """File-like object with .read() method for decrypting symmetric GPG.
@@ -53,8 +55,10 @@ class GpgSymmetricFileReader(object):
     # TODO(pts): Add has_mdc, cipher_algo etc. and other parameters to self,
     # make them available for inspection. Also in *FileWriter.
     it = gpgs.yield_gpg_literal_data_chunks(fread)
-    if it.next():  # Wait for successful init.
-      raise ValueError('Expected empty init string.')
+    for data in it:
+      if data:  # Wait for successful init.
+        raise ValueError('Expected empty init string.')
+      break
     # TODO(pts): Flush before raising an exception (on e.g. MDC mismatch),
     # modify iter_to_fread_or_all.
     self.read = gpgs.iter_to_fread_or_all(it)
@@ -138,13 +142,13 @@ class GpgSymmetricFileWriter(object):
       # Just like in encrypt_symmetric_gpg(...), we treat all output files as
       # binary, using '\n' as line separator. This is by design and for
       # simplicity.
-      self._fwrite('-----BEGIN PGP MESSAGE-----\n\n')
+      self._fwrite(b'-----BEGIN PGP MESSAGE-----\n\n')
     else:
       self._fwrite(header)
       self._abuf, self._asize, self._acrc, self._b2a = (), 0, (), ()
     self.count = 0  # Compatible with EncryptedFile.
     self._qhc = qhc = struct.pack('>B', 224 | buflog2cap)
-    self._pbuf, self.write_hint = ['\xcb' + qhc], self.bufcap  # Plaintext buffer.
+    self._pbuf, self.write_hint = [b'\xcb' + qhc], self.bufcap  # Plaintext buffer.
     self._qbuf, self._qsize = [first_plaintext_chunk], len(first_plaintext_chunk)
     self.write(literal_header)
     self.count = 0  # Do it again, reset counter after .write above.
@@ -211,7 +215,7 @@ class GpgSymmetricFileWriter(object):
     if prem != _bufcap - lda:
       return  # Canary not found, don't flush.
     pbuf[0] = _glnph(lda, len(pbuf[0]) > 1 and 11)
-    pbuf = ''.join(pbuf)
+    pbuf = b''.join(pbuf)
     qbuf, qsize = self._qbuf, self._qsize
     qbuf.append(self._ze_compress(pbuf))
     del pbuf  # Save memory.
@@ -221,9 +225,9 @@ class GpgSymmetricFileWriter(object):
       qsize += len(qbuf[-1])
       self._ze = ()
     if self._mdc_obj:
-      qbuf.append('\xd3\x14')
+      qbuf.append(b'\xd3\x14')
       qsize += 2
-    data = ''.join(qbuf)
+    data = b''.join(qbuf)
     assert len(data) == qsize
     self._qbuf, qbuf, self._qsize = (), (), 0  # Further .write()s will fail.
     if self._mdc_obj:
@@ -236,7 +240,7 @@ class GpgSymmetricFileWriter(object):
     if j:
       self._add_encrypted(self._cfb_encrypt(buffer(data, 0, j)))
     if ldbs:  # Encrypt the last partial block.
-      self._add_encrypted(self._cfb_encrypt(data[j:] + '\0' * (self._bs - ldbs))[:ldbs])
+      self._add_encrypted(self._cfb_encrypt(data[j:] + b'\0' * (self._bs - ldbs))[:ldbs])
     data = self._cpre  # Flush the last encrypted partial packet.
     self._cpre = ()
     header = _glnph(len(data), self._ciphp and self._packet_type)
@@ -248,11 +252,11 @@ class GpgSymmetricFileWriter(object):
       abuf.append(header)
       abuf.append(data)
       asize += len(header) + len(data)
-      adata, lam = ''.join(abuf), asize % 48
+      adata, lam = b''.join(abuf), asize % 48
       assert len(adata) == asize
       lal, _buffer = asize - lam, buffer
       for i in xrange(0, lal, 48):
-        fwrite(_b2a(_buffer(adata, i, 48)))  # Contains trailing '\n'.
+        fwrite(_b2a(_buffer(adata, i, 48)))  # Contains trailing b'\n'.
       abuf[:] = (adata[lal:],)
       adata, asize = (), lam
       fwrite(gpgs.get_gpg_armor_trailer(abuf, asize, acrc, _b2a))
@@ -267,7 +271,7 @@ class GpgSymmetricFileWriter(object):
         # Avoiding this long copy and doing `for data in pbuf:' instead
         # makes it a bit slower with bufcap == 8192. That's probably because
         # calling ze_compress twice is slow.
-        data = ''.join(pbuf)  # Long copy.
+        data = b''.join(pbuf)  # Long copy.
         assert prem == _bufcap - len(data) + len(pbuf[0])  # Consistency.
         dataq = ze_compress(data)
         if dataq:
@@ -278,7 +282,7 @@ class GpgSymmetricFileWriter(object):
         pbuf[:] = (qhc,)
         self.write_hint = _bufcap  # Must be last for canary.
       elif prem > -_bufcap:  # This is just speedup, could be commented out.
-        data = ''.join(pbuf)
+        data = b''.join(pbuf)
         assert prem == _bufcap - len(data) + len(pbuf[0])  # Consistency.
         dataq = ze_compress(data[:prem])  # This doesn't work if prem == 0.
         if dataq:
@@ -299,7 +303,7 @@ class GpgSymmetricFileWriter(object):
         #assert len(datap) - ldam - i == lda - _bufcap - ldam  # True but slow.
         #assert not (len(datap) - ldam - i) % _bufcap  # True but slow.
         pbuf.append(datap[:i])
-        dataq = ''.join(pbuf)
+        dataq = b''.join(pbuf)
         assert len(dataq) - len(pbuf[0]) == _bufcap  # Consistency.
         dataq = ze_compress(dataq)
         if dataq:
@@ -324,9 +328,10 @@ class GpgSymmetricFileWriter(object):
         else:
           pbuf[:] = (qhc,)
           self.write_hint = _bufcap  # Must be last for canary.
+
   def _flush_qbuf(self):
     qbuf = self._qbuf
-    data = ''.join(qbuf)
+    data = b''.join(qbuf)
     if data:
       assert self._qsize == len(data)
       ldbs = len(data) % self._bs
@@ -363,7 +368,7 @@ class GpgSymmetricFileWriter(object):
         abuf.append(data)
         asize += len(header) + len(data)
         if asize >= 48:
-          adata, lam = ''.join(abuf), asize % 48
+          adata, lam = b''.join(abuf), asize % 48
           lal = asize - lam
           # We need a loop here so that we get '\n' after each 48 (+16) bytes.
           for i in xrange(0, lal, 48):
@@ -494,13 +499,13 @@ class EncryptedFile(GpgSymmetricFileWriter):
   # Unused, for compatibility with encryptedfile 1.1.1. In
   # encryptedfile the values are hashlib constructor functions.
   HASHES = {
-      HASH_MD5: lambda data='': new_hash('md5', data),
-      HASH_SHA1: lambda data='': new_hash('sha1', data),
+      HASH_MD5: lambda data=b'': new_hash('md5', data),
+      HASH_SHA1: lambda data=b'': new_hash('sha1', data),
       HASH_RIPEMD160: lambda data='': new_hash('ripemd160', data),
-      HASH_SHA256: lambda data='': new_hash('sha256', data),
-      HASH_SHA384: lambda data='': new_hash('sha384', data),
-      HASH_SHA512: lambda data='': new_hash('sha512', data),
-      HASH_SHA224: lambda data='': new_hash('sha224', data),
+      HASH_SHA256: lambda data=b'': new_hash('sha256', data),
+      HASH_SHA384: lambda data=b'': new_hash('sha384', data),
+      HASH_SHA512: lambda data=b'': new_hash('sha512', data),
+      HASH_SHA224: lambda data=b'': new_hash('sha224', data),
   }
 
   __slots__ = ('file', '_is_text', '_prefix')
@@ -542,8 +547,8 @@ class EncryptedFile(GpgSymmetricFileWriter):
         'mtime': timestamp or 0,
         'do_mdc': False,
         'do_add_ascii_armor': False,
-        'iv': iv,
-        'salt': salt,
+        'iv': check_binary(iv),
+        'salt': check_binary(salt),
     }
     if isinstance(file_obj, basestring):
       if len(file_obj) > 0xff:
@@ -599,8 +604,8 @@ class EncryptedFile(GpgSymmetricFileWriter):
     if self.file.closed:
       return
     if self._is_text and self._prefix:
-      assert self._prefix == '\r'
-      GpgSymmetricFileWriter.write(self, '\r\n')
+      assert self._prefix == b'\r'
+      GpgSymmetricFileWriter.write(self, b'\r\n')
     GpgSymmetricFileWriter.close(self)
     if self.file:
       self.file.close()
@@ -612,13 +617,13 @@ class EncryptedFile(GpgSymmetricFileWriter):
     functionality is used instead of .write for non-binary mode.
     """
     if self._is_text:
-      if isinstance(data, unicode):
-        data = data.encode('utf-8')
+      if isinstance(data, text_type):
+        data = ensure_binary(data)
       data, self._prefix = self._prefix + data, ''
       if data:
-        if data[-1] == '\r':
-          data, self._prefix = data[:-1], '\r'
+        if data[-1:] == b'\r':
+          data, self._prefix = data[:-1], b'\r'
         # This is a simple, low-effort, but correct conversion of line breaks to '\r\n',
         # without using regexps.
-        data = data.replace('\r\n', '\n').replace('\r', '\n').replace('\n', '\r\n')
+        data = data.replace(b'\r\n', b'\n').replace(b'\r', b'\n').replace(b'\n', b'\r\n')
     GpgSymmetricFileWriter.write(self, data)

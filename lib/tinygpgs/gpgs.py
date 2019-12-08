@@ -7,13 +7,14 @@ Imports PyCrypto.Cipher._* or tinygpgs.cipher lazily.
 Imports hashlib or tinygpgs.hash lazily.
 """
 
+import binascii
 import struct
-import sys
 
+from tinygpgs.pyx import iteritems, buffer, binary_type, xrange, to_hex_str, is_buffer_slice, is_buffer_item_binary, is_buffer_join, ensure_binary, callable
 from tinygpgs.strxor import make_strxor, fast_strxor
 
 
-def new_hash(hash, data='', is_slow_hash=False, _slow_hashes={}):
+def new_hash(hash, data=b'', is_slow_hash=False, _slow_hashes={}):
   hash = hash.replace('-', '').lower()
   if not is_slow_hash:
     try:
@@ -23,6 +24,7 @@ def new_hash(hash, data='', is_slow_hash=False, _slow_hashes={}):
       pass
     # .upper() happens to work for SLOW_HASHES.keys().
     module_name = 'Crypto.Hash._' + hash.upper()
+    import sys
     try:
       __import__(module_name)
       digest_cons = sys.modules[module_name].new
@@ -35,7 +37,7 @@ def new_hash(hash, data='', is_slow_hash=False, _slow_hashes={}):
         import sha
         return sha.sha(data)
       except ImportError:
-        return SlowSha1(data)
+        pass
     if hash == 'md5':
       try:  # Python 2.4.
         import md5
@@ -88,6 +90,7 @@ def get_cipher_cons(cipher, is_slow_cipher, is_cfb, _slow_ciphers={}):
   if not is_slow_cipher:
     cname = 'Crypto.Cipher._' + module_name
     cons = None
+    import sys
     try:
       __import__(cname)
       cons = getattr(sys.modules[cname], 'new', None)
@@ -161,17 +164,26 @@ CRC24_TABLE = (
 )
 
 
-def crc24(data, crc=0xb704ce):
-  if not isinstance(data, (str, buffer)):
-    raise TypeError
-  table = CRC24_TABLE
-  for c in data:
-    crc = (table[((crc >> 16) ^ ord(c)) & 0xff] ^ (crc << 8)) & 0x00ffffff
-  return crc
+if b'\0'[0]:  # Python 2, iterating over str yields 1-char strs.
+  def crc24(data, crc=0xb704ce):
+    if not isinstance(data, (binary_type, buffer)):
+      raise TypeError
+    table = CRC24_TABLE
+    for c in data:
+      crc = (table[((crc >> 16) ^ ord(c)) & 0xff] ^ (crc << 8)) & 0x00ffffff
+    return crc
+else:
+  def crc24(data, crc=0xb704ce):
+    if not isinstance(data, (binary_type, buffer)):
+      raise TypeError
+    table = CRC24_TABLE
+    for c in data:
+      crc = (table[((crc >> 16) ^ c) & 0xff] ^ (crc << 8)) & 0x00ffffff
+    return crc
 
 
 def str_to_fread(data):
-  if not isinstance(data, (str, buffer)):
+  if not isinstance(data, (binary_type, buffer)):
     raise TypeError
   i_ary = [0]
 
@@ -234,7 +246,7 @@ CIPHER_ALGOS_ALL = {
     316: 'chacha20',
 }
 
-KEYTABLE_SIZES = dict((_k, CIPHER_INFOS[_v][2]) for _k, _v in CIPHER_ALGOS.iteritems())
+KEYTABLE_SIZES = dict((_k, CIPHER_INFOS[_v][2]) for _k, _v in iteritems(CIPHER_ALGOS))
 
 DIGEST_ALGOS = {  # --digest-algo=..., --s2k-digest-algo=... .
     1: 'md5',
@@ -262,7 +274,9 @@ COMPRESS_ALGOS = {
 
 def iter_to_fread(iter_str):
   _buffer = buffer
-  data_ary, iter_str = [_buffer('')], iter(iter_str)
+  data_ary, iter_str = [_buffer(b'')], iter(iter_str)
+  do_binary = is_buffer_slice
+  do_binary_before_join = is_buffer_slice and not is_buffer_join
 
   def fread_from_iter(size):
     data = data_ary[0]
@@ -271,25 +285,30 @@ def iter_to_fread(iter_str):
       ld = len(data)
       ldm = ld - ld % mod
       if ldm < min_size:
-        return ''
+        return b''
       result, data_ary[0] = _buffer(data, 0, ldm), _buffer(data, ldm)
       return result
     if size <= 0:
-      return ''
+      return b''
     result, data = data[:size], _buffer(data, size)
     if len(result) < size:
       remaining = size - len(result)
       result = [result]
       while remaining > 0:
-        try:
-          data = _buffer(iter_str.next())
-        except StopIteration:
+        for data in iter_str:
           break
+        else:
+          break  # Out of the `while' loop.
         # This may be a long copy, but there is no way around it.
         result.append(data[:remaining])
         data = _buffer(data, len(result[-1]))
         remaining -= len(result[-1])
-      result = ''.join(result)
+      if do_binary_before_join:
+        result = b''.join(map(binary_type, result))
+      else:  # Python 2.x and >=3.4.
+        result = b''.join(result)
+    elif do_binary:
+      result = binary_type(result)
     data_ary[0] = data
     return result
 
@@ -298,43 +317,45 @@ def iter_to_fread(iter_str):
 
 def iter_to_fread_or_all(iter_str):
   _buffer = buffer
-  data_ary, iter_str = [_buffer('')], iter(iter_str)
+  data_ary, iter_str = [_buffer(b'')], iter(iter_str)
+  do_binary = is_buffer_slice
+  do_binary_before_join = is_buffer_slice and not is_buffer_join
 
   def fread_from_iter(size=()):
     data = data_ary[0]
-    if size is ():  # Read everything until EOF.
-      result, data_ary[0], data = [data[:]], '', ''
-      while 1:
-        try:
-          # This may be a long copy, but there is no way around it.
-          result.append(iter_str.next()[:])
-        except StopIteration:
-          break
-        result.append(data)
-      return ''.join(result)
+    if size == ():  # Read everything until EOF.
+      result, data_ary[0] = [data[:]], b''
+      # This may be a long copy, but there is no way around it.
+      result.extend(iter_str)
+      return b''.join(result)
     if size <= 0:
-      return ''
+      return b''
     result, data = data[:size], _buffer(data, size)
     if len(result) < size:
       remaining = size - len(result)
       result = [result]
       while remaining > 0:
-        try:
-          data = _buffer(iter_str.next())
-        except StopIteration:
+        for data in iter_str:
           break
+        else:
+          break  # Out of the `while' loop.
         # This may be a long copy, but there is no way around it.
         result.append(data[:remaining])
         data = _buffer(data, len(result[-1]))
         remaining -= len(result[-1])
-      result = ''.join(result)
+      if do_binary_before_join:
+        result = b''.join(map(binary_type, result))
+      else:  # Python 2.x and >=3.4.
+        result = b''.join(result)
+    elif do_binary:
+      result = binary_type(result)
     data_ary[0] = data
     return result
 
   return fread_from_iter
 
 
-def get_gpg_cipher(cipher_algo, keytable, is_slow_cipher, cfb_iv=None):
+def get_gpg_encrypt_func(cipher_algo, keytable, is_slow_cipher, cfb_iv=None, need_wrap_bytes_ary=[]):
   """Returns (codebook, block_size)."""
   if cipher_algo not in CIPHER_ALGOS:
     raise ValueError('Unsupported cipher_algo: %d' % cipher_algo)
@@ -346,10 +367,37 @@ def get_gpg_cipher(cipher_algo, keytable, is_slow_cipher, cfb_iv=None):
   if cfb_iv:
     MODE_CFB = 3  # PyCrypto.
     try:
-      return cipher_cons(keytable, MODE_CFB, cfb_iv, segment_size=(block_size << 3)), block_size
-    except (TypeError, ValueError), e:  # Example: All slow ciphers (is_slow_cipher).
+      encrypt_func = cipher_cons(keytable, MODE_CFB, cfb_iv, segment_size=(block_size << 3)).encrypt
+    except (TypeError, ValueError) as e:  # Example: All slow ciphers (is_slow_cipher).
       raise BadCfbCipher(str(e))
-  return cipher_cons(keytable), block_size
+  else:
+    encrypt_func = cipher_cons(keytable).encrypt
+  is_py_cipher = is_python_function(encrypt_func)
+  if not need_wrap_bytes_ary:
+    # Detect whether encrypt_func works with Python 3 memoryview.
+    if is_py_cipher or type(b'') == str:
+      need_wrap_bytes_ary.append(False)
+    else:
+      if cfb_iv:
+        encrypt_func2 = cipher_cons(keytable).encrypt
+      else:
+        encrypt_func2 = encrypt_func
+      try:
+        encrypt_func2(memoryview('\0' * block_size))
+        need_wrap_bytes_ary.append(False)
+      except TypeError:
+        need_wrap_bytes_ary.append(True)
+  if need_wrap_bytes_ary[0]:
+    # In encrypt_func doesn't work with Python 3 memoryview, wrap it to fix it.
+    def wrap_encrypt_func(data, _encrypt_func=encrypt_func, _memoryview=memoryview):
+      if isinstance(data, _memoryview):
+        # PyCrypto 2.6.1 in Python 3.x needs a copy.
+        return _encrypt_func(data.tobytes())
+      else:
+        return _encrypt_func(data)
+
+    encrypt_func = wrap_encrypt_func
+  return encrypt_func, is_py_cipher, block_size
 
 
 def get_gpg_s2k_string_to_key(keytable_size, salt, count, digest_func, passphrase):  # Slow.
@@ -362,7 +410,7 @@ def get_gpg_s2k_string_to_key(keytable_size, salt, count, digest_func, passphras
   if count <= len(sp):
     count = len(sp)
   while session_key_remaining > 0:
-    d, c = digest_func('\0' * len(session_key)), count
+    d, c = digest_func(b'\0' * len(session_key)), count
     if c >> 16:  # <FAST-HASH>: run little Python code only.
       cx = (1 << 16) // len(sp)
       spx = sp * cx  # At most 64 KiB of memory use.
@@ -374,7 +422,7 @@ def get_gpg_s2k_string_to_key(keytable_size, salt, count, digest_func, passphras
     d.update(sp[:c % len(sp)])
     session_key.append(d.digest())
     session_key_remaining -= len(session_key[-1])
-  session_key = ''.join(session_key)[:keytable_size]
+  session_key = b''.join(session_key)[:keytable_size]
   assert len(session_key) == keytable_size
   return session_key
 
@@ -391,13 +439,13 @@ def is_python_function(func, _types=(type(_DummyClass().dummy), type(lambda: 0))
 # --- GPG decryption.
 
 
-def yield_gpg_binary_packets(fread, c0=''):
+def yield_gpg_binary_packets(fread, c0=b''):
   while 1:
     if not c0:
       c0 = fread(1)
     if not c0:
       break
-    b, c0 = ord(c0), ''
+    b, c0 = ord(c0), b''
     if not b & 128:
       raise ValueError('Tag bit 7 expected.')
     if b & 64:  # New-format packet.
@@ -494,39 +542,39 @@ def get_gpg_ascii_armor_fread(fread):
   import binascii  # For base64.
 
   def yield_data_chunks(_a2b=binascii.a2b_base64, _crc24=crc24, _buffer=buffer):
-    buf, is_in_header, crc = '\n', True, _crc24('')
+    buf, is_in_header, crc = b'\n', True, _crc24(b'')
 
     try:
       while 1:
         data = fread(512)  # Anything >= 1 works here.
         if not data:
           raise ValueError('EOF in GPG ASCII armor.')
-        data = data.replace('\r', '')
+        data = data.replace(b'\r', b'')
         if not data:
           continue
         if is_in_header:  # Skip over header.
-          if buf[-1:] == '\n' and data[0] == '\n':
+          if buf[-1:] == b'\n' and data[:1] == b'\n':
             data, is_in_header = data[1:], False
           else:
-            i = data.find('\n\n')
+            i = data.find(b'\n\n')
             if i >= 0:
               data, is_in_header = data[i + 2:], False
             else:
-              buf = data[-1:]  # Keep last '\n', if any.
+              buf = data[-1:]  # Keep last b'\n', if any.
               continue
-          buf = ''
-        i = data.find('-')
+          buf = b''
+        i = data.find(b'-')
         if i >= 0:
-          buf += data[:i].replace('\n', '')
+          buf += data[:i].replace(b'\n', b'')
           data = data[i:]
           break
         # This is a long string copy (`data' can be long), but there is no
         # easy way around it.
-        buf += data.replace('\n', '')
+        buf += data.replace(b'\n', b'')
         s = len(buf)
         if s > 12:
           t = (s - 9) & ~3  # Keep last 5 for checksum, keep 4 for last few bytes.
-          i = buf.find('=')
+          i = buf.find(b'=')
           if 0 <= i < t:
             raise ValueError('Too much padding at end of GPG ASCII armor base64.')
           bdata, buf = _a2b(_buffer(buf, 0, t)), buf[t:]
@@ -534,22 +582,22 @@ def get_gpg_ascii_armor_fread(fread):
           yield bdata
       if len(data) < 26:
         data += fread(26 - len(data))
-      if not (data.startswith('-----END PGP MESSAGE-----') and data[25 : 26] in '\r\n'):
+      if not (data.startswith(b'-----END PGP MESSAGE-----') and data[25 : 26] in b'\r\n'):
         raise ValueError('Bad end of GPG ASCII armor.')
-      t = buf.rfind('=')
+      t = buf.rfind(b'=')
       if t <= 0:
         raise ValueError('Missing GPG ASCII armor checksum.')
       if len(buf) != t + 5:
         raise ValueError('GPG ASCII armor checksum must be 4 bytes.')
       expected_crc = _a2b(_buffer(buf, t + 1))
-      expected_crc, = struct.unpack('>L', '\0' + expected_crc)
-      if buf[t - 2 : t] == '==':
+      expected_crc, = struct.unpack('>L', b'\0' + expected_crc)
+      if buf[t - 2 : t] == b'==':
         i = t - 2
-      elif buf[t - 1 : t] == '=':
+      elif buf[t - 1 : t] == b'=':
         i = t - 1
       else:
         i = t
-      if buf.find('=') != i:
+      if buf.find(b'=') != i:
         raise ValueError('Too much padding at end of GPG ASCII armor base64.')
       bdata = _a2b(buf[:t])
       crc = _crc24(bdata, crc)
@@ -564,15 +612,18 @@ def get_gpg_ascii_armor_fread(fread):
 
 
 def yield_gpg_packets(fread, has_ascii_armor_ary=None):
+  c = fread(1)
+  if not isinstance(c, binary_type):
+    raise ValueError('Please open the GPG input file in binary mode.')
   while 1:
-    c = fread(1)
     if not c:
       raise ValueError('EOF before GPG data.')
     if not c.isspace():
       break
-  if c == '-':
+    c = fread(1)
+  if c[:1] == b'-':
     data = fread(27)
-    if not (len(data) == 27 and data.startswith('-----BEGIN PGP MESSAGE-----'[1:]) and data[26] in '\r\n'):
+    if not (len(data) == 27 and data.startswith(b'-----BEGIN PGP MESSAGE-----'[1:]) and data[26 : 27] in b'\r\n'):
       raise ValueError('GPG ASCII armor expected.')
     if has_ascii_armor_ary is not None:
       has_ascii_armor_ary.append(True)
@@ -585,12 +636,12 @@ def yield_gpg_packets(fread, has_ascii_armor_ary=None):
   b, packet_type = ord(c), -1
   if b & 128:
     packet_type = (b & 63) >> ((~b >> 5) & 2)
-  if packet_type != 3:  # packet_type == 3 (SKESK), c in '\x8c\x8d\x8e\xc3'.
+  if packet_type != 3:  # packet_type == 3 (SKESK), c in b'\x8c\x8d\x8e\xc3'.
     if packet_type < 0:
       raise ValueError('Bad GPG data, packet expected.')
     if not 1 <= packet_type <= 19:
       raise ValueError('Bad GPG data, packet expected, got unusual packet of type: %d' % packet_type)
-    # TODO(pts): Add support for `gpg -e --sign': '\x90\x91\x92\xc4' (packet_type == 4), also packet_type == 2.
+    # TODO(pts): Add support for `gpg -e --sign': b'\x90\x91\x92\xc4' (packet_type == 4), also packet_type == 2.
     if packet_type == 8:
       raise ValueError('GPG symmetric key encrypted data expected, got compressed data (probably public-key signed message).')
     if packet_type in (2, 4):
@@ -625,7 +676,7 @@ def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash, show_inf
     raise ValueError('SKESK version 4 expected, got %d' % version)
   i = 4
   if s2k_mode == 0:
-    salt, count = '', 0
+    salt, count = b'', 0
   else:
     salt = data[i : i + 8]
     if len(salt) < 8:
@@ -634,7 +685,7 @@ def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash, show_inf
     if s2k_mode == 3:
       if i >= len(data):
         raise ValueError('EOF in SKESK iterated-salted count.')
-      b = ord(data[i])
+      b = ord(data[i : i + 1])
       i += 1
       count = (16 + (b & 15)) << ((b >> 4) + 6)
     else:
@@ -642,14 +693,14 @@ def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash, show_inf
   show_info_func('GPG symmetric cipher_algo=%s s2k_mode=%s digest_algo=%s count=%d len(salt)=%d len(encrypted_session_key)=%d has_ascii_armor=%d' %
                  (CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), S2K_MODES.get(s2k_mode, s2k_mode), DIGEST_ALGOS.get(digest_algo, digest_algo), count, len(salt), len(data) - i, int(has_ascii_armor_ary[0])))
   if do_show_session_key:
-    show_info_func('GPG symmetric encrypted_session_key=%r' % ':'.join((str(cipher_algo), data[i:].encode('hex').upper())))
+    show_info_func('GPG symmetric encrypted_session_key=%r' % ':'.join((str(cipher_algo), to_hex_str(data[i:]).upper())))
   if cipher_algo not in CIPHER_ALGOS:
     raise ValueError('Unknown SKESK cipher_algo: %d' % cipher_algo)
   if s2k_mode not in S2K_MODES:
     raise ValueError('Unknown SKESK s2k_mode: %d' % s2k_mode)
   if digest_algo not in DIGEST_ALGOS:
     raise ValueError('Unknown SKESK digest_algo: %d' % digest_algo)
-  digest_func = lambda data='': new_hash(DIGEST_ALGOS[digest_algo], data, is_slow_hash)
+  digest_func = lambda data=b'': new_hash(DIGEST_ALGOS[digest_algo], data, is_slow_hash)
   show_info_func('GPG symmetric is_py_digest=%d' % int(is_python_function(digest_func().update)))
   keytable_size = KEYTABLE_SIZES[cipher_algo]
   for packet_type, is_partial, data2 in iter_packets:
@@ -663,7 +714,7 @@ def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash, show_inf
     has_mdc = True
     if not data2:
       raise ValueError('Integrity-protected packet too short.')
-    version = ord(data2[0])
+    version = ord(data2[:1])
     if version != 1:
       raise ValueError('Integrity-protected packet version 1 expected, got: %d' % version)
     data_ary = [is_partial, buffer(data2, 1)]
@@ -673,6 +724,7 @@ def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash, show_inf
 
   if callable(passphrase):
     passphrase = passphrase()
+  passphrase = ensure_binary(passphrase)
   # Correct, same as:
   # gpg --list-packets -vvvvv --show-session-key --pinentry-mode loopback hellow4.bin.gpg
   session_key = get_gpg_s2k_string_to_key(keytable_size, salt, count, digest_func, passphrase)  # Slow.
@@ -680,34 +732,33 @@ def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash, show_inf
 
   if len(data) > i:  # Encrypted session key.
     if do_show_session_key:
-      show_info_func('GPG symmetric derived_session_key_key=%r' % ':'.join((str(cipher_algo), session_key.encode('hex').upper())))
+      show_info_func('GPG symmetric derived_session_key_key=%r' % ':'.join((str(cipher_algo), to_hex_str(session_key).upper())))
     if s2k_mode == 0:
       raise ValueError('Encrypted session key needs salt.')
-    codebook, bs = get_gpg_cipher(cipher_algo, session_key, is_slow_cipher)
+    encrypt_func, _, bs = get_gpg_encrypt_func(cipher_algo, session_key, is_slow_cipher)
     strxor_bs = make_strxor(bs)  # For cipher_algo block size.
-    encrypt_func = codebook.encrypt
-    fre = encrypt_func('\0' * bs)
+    fre = encrypt_func(b'\0' * bs)
     session_key = []
     for i in xrange(i, len(data), bs):
       datae = data[i : i + bs]
-      data1 = strxor_bs(datae + '\0' * (bs - len(datae)), fre)[:len(datae)]
+      data1 = strxor_bs(datae + b'\0' * (bs - len(datae)), fre)[:len(datae)]
       if session_key:
         session_key.append(data1)
       else:
-        cipher_algo = ord(data1[0])
+        cipher_algo = ord(data1[:1])
         if cipher_algo not in CIPHER_ALGOS:
           raise ValueError('Unknown encrypted session key cipher_algo: %d' % cipher_algo)
         session_key.append(data1[1:])  # Short copy.
       if len(datae) < bs:
         break
       fre = encrypt_func(datae)
-    session_key = ''.join(session_key)
+    session_key = b''.join(session_key)
     if len(session_key) != KEYTABLE_SIZES[cipher_algo]:
       raise ValueError('Encrypted session key size must be %d for cipher_algo %s, got: %d' %
                        (KEYTABLE_SIZES[cipher_algo], CIPHER_ALGOS[cipher_algo], len(session_key)))
   if do_show_session_key:
     # Showing it with the same display style as gpg(1).
-    show_info_func('GPG symmetric session_key=%r' % ':'.join((str(cipher_algo), session_key.encode('hex').upper())))
+    show_info_func('GPG symmetric session_key=%r' % ':'.join((str(cipher_algo), to_hex_str(session_key).upper())))
 
   def yield_data_chunks():
     if data_ary:
@@ -762,13 +813,11 @@ def get_decrypt_symmetric_gpg_literal_packet_reader(
   show_info_func(
       'GPG symmetric session has_mdc=%d cipher_algo=%s len(session_key)=%d' %
       (int(has_mdc), CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), len(session_key)))
-  #print (cipher_algo, session_key, has_mdc)
   strxor_2 = make_strxor(2)
-  codebook, bs = get_gpg_cipher(cipher_algo, session_key, is_slow_cipher)
-  show_info_func('GPG symmetric is_py_cipher=%d' % int(is_python_function(codebook.encrypt)))
+  encrypt_func, is_py_cipher, bs = get_gpg_encrypt_func(cipher_algo, session_key, is_slow_cipher)
+  show_info_func('GPG symmetric is_py_cipher=%d' % int(is_py_cipher))
   strxor_bs = make_strxor(bs)  # For cipher_algo block size.
-  encrypt_func = codebook.encrypt
-  fre = encrypt_func('\0' * bs)
+  fre = encrypt_func(b'\0' * bs)
   data = fread(bs)
   if len(data) != bs:
     raise ValueError('EOF in block 0.')
@@ -799,20 +848,20 @@ def get_decrypt_symmetric_gpg_literal_packet_reader(
     # On empty plaintext, len(data) == 8 here.
     if len(data) < 2:
       raise ValueError('EOF in block 1.')
-    data1 = strxor_bs(data + '\0' * (bs - len(data)), fre)[:len(data)]
+    data1 = strxor_bs(data + b'\0' * (bs - len(data)), fre)[:len(data)]
     mdc_obj, mdc_min_queue_size = None, 0
   # By doing these checks we decrease the P above by better than /2**5.
-  if data1[0] == '\xa3':  # Indeterminate, packet_type == 8.
-    if ord(data1[1]) >= 0x20:  # GPG 2.1.18 has 0..3 defined.
+  if data1[:1] == b'\xa3':  # Indeterminate, packet_type == 8.
+    if ord(data1[1 : 2]) >= 0x20:  # GPG 2.1.18 has 0..3 defined.
       raise ValueError('Bad passphrase (invalid compress_algo).')
-    compress_algo = ord(data1[1])
+    compress_algo = ord(data1[1 : 2])
     if mdc_obj:
       mdc_obj.update(data1[:2])
     data1 = data1[2:]  # Short copy.
   else:
-    if mdc_obj and data1.startswith('\xd3\x14'):
+    if mdc_obj and data1.startswith(b'\xd3\x14'):
       pass  # MDC without any literal packet.
-    elif data1[0] in '\xac\xad\xae\xcb':
+    elif data1[:1] in b'\xac\xad\xae\xcb':
       pass  # Literal packet, non-indeterminate.
     else:
       raise BadPassphraseError('Bad passphrase (bad packet type).')
@@ -837,21 +886,21 @@ def get_decrypt_symmetric_gpg_literal_packet_reader(
   if zd:
     zd_decompress = zd.decompress
     try:
-      zd_decompress('', 42)
-      if zd.unconsumed_tail != '':
+      zd_decompress(b'', 42)
+      if zd.unconsumed_tail != b'':
         raise ValueError
       # Limit memory usage.
       zdml = get_yield_decompress_chunks(zd)  # zlib has it.
     except (TypeError, ValueError, AttributeError):
       zdml = None  # lambda data1, _zdd: (_zdd(data1,))  # bz2 doesn't have it.
 
-  def yield_data_chunks(data1, data, encrypt_func, mdc_obj):
+  def yield_data_chunks(data1, data, encrypt_func, is_py_cipher, mdc_obj):
     if mdc_obj:
       # We don't process data1 yet, because we want to remove the MDC packet
       # (22 bytes, packet_type == 19, starts with '\xd3\x14') from the end first.
       mdc_queue = data1
     else:
-      mdc_queue = ''
+      mdc_queue = b''
       if zdml:
         for chunk in zdml(data1):
           yield chunk
@@ -859,7 +908,8 @@ def get_decrypt_symmetric_gpg_literal_packet_reader(
         yield zd_decompress(data1)  # Can raise zlib.error.
       else:
         yield data1
-    _fast_strxor = not is_python_function(encrypt_func) and fast_strxor
+    _fast_strxor = not is_py_cipher and fast_strxor
+    do_binary = is_buffer_slice
     if len(data) == bs:
       bs2bs = (bs * (2 + mdc_min_queue_size), bs)
       bsmdc = bs * mdc_min_queue_size
@@ -867,7 +917,7 @@ def get_decrypt_symmetric_gpg_literal_packet_reader(
         data2 = fread(bs)
         if len(data2) < bs:
           fre = encrypt_func(data)
-          mdc_queue += strxor_bs(data2 + '\0' * (bs - len(data2)), fre)[:len(data2)]
+          mdc_queue += strxor_bs(data2 + b'\0' * (bs - len(data2)), fre)[:len(data2)]
           break
         data3 = _fast_strxor and fread(bs2bs)
         if data3:  # <FAST-DECRYPTION>: large prebuffered chunks.
@@ -900,6 +950,8 @@ def get_decrypt_symmetric_gpg_literal_packet_reader(
           #
           # Slow copy in: data3[:], (data2 + data3), +=.
           datad, data3, data = _fast_strxor(encrypt_func(data), data2), data3[:], data3[lbs - bs - bs:]
+          if do_binary:
+            data3 = binary_type(data3)
           datad += _fast_strxor(encrypt_func(_buffer((data2 + data3), 0, lbs - bs)), data3)
           data2 = _buffer(datad, 0, lbs - bsmdc)
           if mdc_obj:
@@ -932,7 +984,7 @@ def get_decrypt_symmetric_gpg_literal_packet_reader(
               mdc_queue += data1  # Short copy.
             # Now len(mdc_queue) >= bsmdc, and it contains enough
             # bytes (>= 22) for an MDC packet: mdc_min_queue_size * bs -
-            # len(exp2) - len('\xd3\x14') >= 22.
+            # len(exp2) - len(b'\xd3\x14') >= 22.
           else:
             if zdml:
               for chunk in zdml(data1):
@@ -944,11 +996,11 @@ def get_decrypt_symmetric_gpg_literal_packet_reader(
     if mdc_obj:
       if len(mdc_queue) < 22:
         raise ValueError('EOF in encrypted data before MDC packet.')
-      if mdc_queue[-22 : -20] != '\xd3\x14':  # packet_type == 19.
+      if mdc_queue[-22 : -20] != b'\xd3\x14':  # packet_type == 19.
         raise ValueError('Bad MDC packet header.')
       mdc_queue, mdc = _buffer(mdc_queue, 0, len(mdc_queue) - 22), _buffer(mdc_queue, len(mdc_queue) - 20)
       mdc_obj.update(mdc_queue)
-      mdc_obj.update('\xd3\x14')
+      mdc_obj.update(b'\xd3\x14')
       if _buffer(mdc_obj.digest()) == mdc:
         mdc_obj = None
     if mdc_queue:
@@ -965,10 +1017,10 @@ def get_decrypt_symmetric_gpg_literal_packet_reader(
     if mdc_obj:
       raise ValueError('MDC mismatch, message may have been tampered with.')
 
-  return iter_to_fread(yield_data_chunks(data1, data, encrypt_func, mdc_obj))
+  return iter_to_fread(yield_data_chunks(data1, data, encrypt_func, is_py_cipher, mdc_obj))
 
 
-LITERAL_TYPES = 'btul1'
+LITERAL_TYPES = b'btul1'
 
 
 def skip_gpg_literal_packet_header(data):
@@ -1005,19 +1057,19 @@ def copy_gpg_literal_data(fread, of):
 
 def yield_gpg_literal_data_chunks(fread):
   it = yield_gpg_binary_packets(fread)
-  data, is_done = '', True
+  data, is_done = b'', True
   for packet_type, is_partial, data in it:
     if packet_type != 11:
       if packet_type == 4 and not is_partial:
         continue  # Ignore one-pass packet fur public-key signature.
       raise ValueError('Literal packet expected, got: %d' % packet_type)
     data = skip_gpg_literal_packet_header(data)[:]
-    yield ''  # Indicate successful init.
+    yield b''  # Indicate successful init.
     yield data
     is_done = not is_partial
     break
   else:
-    yield ''  # Indicate successful init.
+    yield b''  # Indicate successful init.
   for packet_type, is_partial, data in it:
     if is_done:
       if packet_type == 2 and not is_partial:
@@ -1043,14 +1095,14 @@ def decrypt_symmetric_gpg(fread, of, *args, **kwargs):
 # --- GPG encryption.
 
 
-def get_random_bytes_python(size):
+def get_random_bytes_python(size, _pack=struct.pack):
   import random
-  return ''.join(chr(random.randrange(0, 255)) for _ in xrange(size))
+  return b''.join(_pack('>B', random.randrange(0, 255)) for _ in xrange(size))
 
 
 def get_random_bytes_default(size, _functions=[]):
   if size == 0:
-    return ''
+    return b''
   if not _functions:
     import os
     try:
@@ -1161,19 +1213,20 @@ def get_encrypt_symmetric_gpg_params(
     passphrase,  # This is the first argument, order of others can change.
     is_slow_cipher=False, is_slow_hash=False, cipher='cast5', s2k_digest='sha1', compress='zip', compress_level=6, s2k_mode=3, s2k_count=65536, salt=None,
     do_mdc=True,  # No fixed default in gpg(1), let's play it safe with True.
-    buflog2cap=13, plain_filename='', mtime=0, literal_type='b', do_add_ascii_armor=False, show_info_func=None, do_show_session_key=False, iv=None):
+    buflog2cap=13, plain_filename=b'', mtime=0, literal_type=b'b', do_add_ascii_armor=False, show_info_func=None, do_show_session_key=False, iv=None):
+  plain_filename, literal_type = ensure_binary(plain_filename), ensure_binary(literal_type)
   if not show_info_func:
     show_info_func = lambda msg: 0
   _pack = struct.pack
   do_mdc = bool(do_mdc)
   cipher = cipher.lower()
-  for cipher_algo, cipher2 in sorted(CIPHER_ALGOS.iteritems()):
+  for cipher_algo, cipher2 in sorted(iteritems(CIPHER_ALGOS)):
     if cipher2 == cipher:
       break
   else:
     raise ValueError('Unknown GPG cipher: %s' % cipher)
   s2k_digest = s2k_digest.replace('-', '').lower()
-  for digest_algo, s2k_digest2 in sorted(DIGEST_ALGOS.iteritems()):
+  for digest_algo, s2k_digest2 in sorted(iteritems(DIGEST_ALGOS)):
     if s2k_digest2 == s2k_digest:
       break
   else:
@@ -1182,15 +1235,15 @@ def get_encrypt_symmetric_gpg_params(
   if compress == 'none':
     compress_algo = 0
   else:
-    for compress_algo, compress2 in sorted(COMPRESS_ALGOS.iteritems()):
+    for compress_algo, compress2 in sorted(iteritems(COMPRESS_ALGOS)):
       if compress2 == compress:
         break
     else:
       raise ValueError('Unknown GPG compressor: %s' % compress)
   if s2k_mode == 0:
-    salt, count = '', 0
+    salt, count = b'', 0
   elif s2k_mode in (1, 3):
-    salt = (salt or '')[:8]
+    salt = (salt or b'')[:8]
     if len(salt) < 8:
       salt = get_random_bytes_default(8 - len(salt))
     if len(salt) != 8:
@@ -1216,10 +1269,10 @@ def get_encrypt_symmetric_gpg_params(
     ze = bz2.BZ2Compressor(compress_level)
   else:
     raise ValueError('Unknown compress_algo: %d' % compress_algo)
-  digest_func = lambda data='': new_hash(s2k_digest, data, is_slow_hash)
+  digest_func = lambda data=b'': new_hash(s2k_digest, data, is_slow_hash)
   keytable_size = KEYTABLE_SIZES[cipher_algo]
-  codebook0, bs = get_gpg_cipher(cipher_algo, '\0' * keytable_size, is_slow_cipher)
-  plaintext_salt = (iv or '')[:bs]
+  _, is_py_cipher, bs = get_gpg_encrypt_func(cipher_algo, b'\0' * keytable_size, is_slow_cipher)
+  plaintext_salt = (iv or b'')[:bs]
   if len(plaintext_salt) < bs:
     plaintext_salt = get_random_bytes_default(bs - len(plaintext_salt))
   if s2k_mode == 3:
@@ -1244,15 +1297,15 @@ def get_encrypt_symmetric_gpg_params(
     show_info_func(
         'GPG symmetric encrypt cipher_algo=%s(%d) is_py_cipher=%d s2k_mode=%s(%d) s2k_digest_algo=%s(%d) is_py_digest=%d '
         's2k_count=%d len(s2k_salt)=%d compress_algo=%s(%d) compress_level=%d len(encrypted_session_key)=%d do_mdc=%d '
-        'len(session_key)=%d bufcap=%d literal_type=%r plain_filename=%r mtime=%d do_add_ascii_armor=%d' %
+        'len(session_key)=%d bufcap=%d literal_type=%s plain_filename=%s mtime=%d do_add_ascii_armor=%d' %
         (CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), cipher_algo,
-         int(is_python_function(codebook0.encrypt)),
+         int(is_py_cipher),
          S2K_MODES.get(s2k_mode, s2k_mode), s2k_mode,
          DIGEST_ALGOS.get(digest_algo, digest_algo), digest_algo,
          int(is_python_function(digest_func().update)),
          count, len(salt),
          COMPRESS_ALGOS.get(compress_algo, compress_algo), compress_algo, compress_level,
-         0, int(do_mdc), keytable_size, 1 << buflog2cap, literal_type, plain_filename, mtime, int(bool(do_add_ascii_armor))))
+         0, int(do_mdc), keytable_size, 1 << buflog2cap, repr(literal_type).lstrip('b'), repr(plain_filename).lstrip('b'), mtime, int(bool(do_add_ascii_armor))))
   if buflog2cap < 9:  # The GPG file format doesn't support less for the first partial packet.
     raise ValueError('buflog2cap must be at least 9, got: %d' % buflog2cap)
   if len(plain_filename) > 255:
@@ -1261,32 +1314,32 @@ def get_encrypt_symmetric_gpg_params(
     raise ValueError('Bad literal type: %r' % literal_type)
   if callable(passphrase):
     passphrase = passphrase()
+  passphrase = ensure_binary(passphrase)
   session_key = get_gpg_s2k_string_to_key(keytable_size, salt, count, digest_func, passphrase)  # Slow.
   if do_show_session_key and show_info_func:
-    show_info_func('GPG symmetric encrypt session_key=%r' % ':'.join((str(cipher_algo), session_key.encode('hex').upper())))
-  codebook, bs = get_gpg_cipher(cipher_algo, session_key, is_slow_cipher)
+    show_info_func('GPG symmetric encrypt session_key=%r' % ':'.join((str(cipher_algo), to_hex_str(session_key).upper())))
+  encrypt_func, _, bs = get_gpg_encrypt_func(cipher_algo, session_key, is_slow_cipher)
   try:
-    cfb_encrypt = get_gpg_cipher(cipher_algo, session_key, is_slow_cipher, '\0' * bs)[0].encrypt
+    cfb_encrypt, _, _ = get_gpg_encrypt_func(cipher_algo, session_key, is_slow_cipher, b'\0' * bs)
   except (BadCfbCipher, ImportError):
     cfb_encrypt = None
-  encrypt_func = codebook.encrypt
   header = _pack('>BBBB%dsB' % len(salt), 4, cipher_algo, s2k_mode, digest_algo, salt, bestb)
   if len(header) > 191:
     raise ValueError('SKESK packet too long.')
   header = struct.pack('>BB', 192 | 3, len(header)) + header
   if do_mdc:
     first_plaintext_chunk = plaintext_salt + plaintext_salt[-2:]
-    mdc_obj = new_hash('sha1', '', is_slow_hash)
+    mdc_obj = new_hash('sha1', b'', is_slow_hash)
     mdc_update = mdc_obj.update
   else:
     mdc_obj = mdc_update = None
-    first_plaintext_chunk = ''
+    first_plaintext_chunk = b''
   if ze:
     chunk = _pack('>BB', 0xa3, compress_algo)  # packet_type == 8.
     first_plaintext_chunk += chunk
-  fr = '\0' * bs
+  fr = b'\0' * bs
   if mdc_obj:
-    packet_type, packet_header = 18, '\1'
+    packet_type, packet_header = 18, b'\1'
   else:
     strxor_bs = make_strxor(bs)
     data = strxor_bs(plaintext_salt, encrypt_func(fr))
@@ -1294,8 +1347,8 @@ def get_encrypt_symmetric_gpg_params(
     got2 = make_strxor(2)(encrypt_func(fr)[:2], plaintext_salt[-2:])
     packet_type, packet_header = 9, fr + got2
     fr = data[2:] + got2  # Short copy.
-    # Set the IV in cfb_encrypt to fr. '\2' * bs is arbitrary.
-    fr1 = cfb_encrypt(strxor_bs(encrypt_func(cfb_encrypt('\2' * bs)), fr))
+    # Set the IV in cfb_encrypt to fr. b'\2' * bs is arbitrary.
+    fr1 = cfb_encrypt(strxor_bs(encrypt_func(cfb_encrypt(b'\2' * bs)), fr))
     assert fr1 == fr
   literal_header = struct.pack('>cB%dsL' % len(plain_filename), literal_type, len(plain_filename), plain_filename, mtime)
   return header, encrypt_func, bs, cfb_encrypt, plaintext_salt, mdc_obj, mdc_update, first_plaintext_chunk, ze, packet_type, packet_header, fr, literal_header, buflog2cap, do_add_ascii_armor
@@ -1304,15 +1357,15 @@ def get_encrypt_symmetric_gpg_params(
 def get_gpg_armor_trailer(abuf, asize, acrc, _b2a):
   output = []
   if asize:
-    adata = ''.join(abuf)
+    adata = b''.join(abuf)
     adata = _b2a(adata)
     output.append(adata)
-    if not adata.endswith('\n'):
-      output.append('\n')
-  output.append('=')
-  output.append(_b2a(struct.pack('>L', acrc)[1:]).rstrip('\n'))
-  output.append('\n-----END PGP MESSAGE-----\n')
-  return ''.join(output)
+    if not adata.endswith(b'\n'):
+      output.append(b'\n')
+  output.append(b'=')
+  output.append(_b2a(struct.pack('>L', acrc)[1:]).rstrip(b'\n'))
+  output.append(b'\n-----END PGP MESSAGE-----\n')
+  return b''.join(output)
 
 
 def encrypt_symmetric_gpg(fread, of, *args, **kwargs):
@@ -1342,8 +1395,8 @@ def encrypt_symmetric_gpg(fread, of, *args, **kwargs):
         mdc_update(data)
       yield data
     if mdc_obj:
-      mdc_update('\xd3\x14')
-      yield '\xd3\x14' + mdc_obj.digest()
+      mdc_update(b'\xd3\x14')
+      yield b'\xd3\x14' + mdc_obj.digest()
 
   def yield_ciphertext_chunks(fr=fr):
     strxor_bs = make_strxor(bs)
@@ -1356,7 +1409,7 @@ def encrypt_symmetric_gpg(fread, of, *args, **kwargs):
         data = pfread(bs)
         if len(data) < bs:
           if data:
-            yield strxor_bs(data + '\0' * (bs - len(data)), encrypt_func(fr))[:len(data)]
+            yield strxor_bs(data + b'\0' * (bs - len(data)), encrypt_func(fr))[:len(data)]
           break
         data = strxor_bs(data, encrypt_func(fr))  # CFB mode.
         yield data
@@ -1369,7 +1422,7 @@ def encrypt_symmetric_gpg(fread, of, *args, **kwargs):
           ldbs = len(data) - len(data) % bs
           yield cfb_encrypt(_buffer(data, 0, ldbs))
           data = data[ldbs:]
-          yield cfb_encrypt(data + '\0' * (bs - len(data)))[:len(data)]
+          yield cfb_encrypt(data + b'\0' * (bs - len(data)))[:len(data)]
           break
         else:  # Likely, critical path.
           yield cfb_encrypt(data)
@@ -1388,21 +1441,21 @@ def encrypt_symmetric_gpg(fread, of, *args, **kwargs):
         for i in xrange(0, ldbs, bs):
           buf.append(strxor_bs(data[i : i + bs], encrypt_func(fr)))
           fr = buf[-1]
-        yield ''.join(buf)
+        yield b''.join(buf)
         if datax:
-          yield strxor_bs(datax + '\0' * (bs - len(datax)), encrypt_func(fr))[:len(datax)]
+          yield strxor_bs(datax + b'\0' * (bs - len(datax)), encrypt_func(fr))[:len(datax)]
           break
         data = pfread(pfread_size)
 
   efread, of_write = iter_to_fread(yield_ciphertext_chunks(fr)), of.write
   if do_add_ascii_armor:
-    # We treat all output files as binary, using '\n' as line separator.
+    # We treat all output files as binary, using b'\n' as line separator.
     # This is by design and for simplicity.
     import binascii
     _b2a, _crc24 = binascii.b2a_base64, crc24
     abuf, asize, acrc = [header], len(header), _crc24(header)
     del header
-    of_write('-----BEGIN PGP MESSAGE-----\n\n')
+    of_write(b'-----BEGIN PGP MESSAGE-----\n\n')
     for bdata in yield_partial_gpg_packet_chunks(packet_type, packet_header, efread, buflog2cap):
       abuf.append(bdata)
       asize += len(bdata)
@@ -1410,11 +1463,11 @@ def encrypt_symmetric_gpg(fread, of, *args, **kwargs):
       # calling it on a buffer multiple times.
       acrc = _crc24(bdata, acrc)  # Very slow, no C extension alternative.
       if asize >= 48:
-        adata, lam = ''.join(abuf), asize % 48
+        adata, lam = b''.join(abuf), asize % 48
         lal = asize - lam
         # We need a loop here so that we get '\n' after each 48 (+16) bytes.
         for i in xrange(0, lal, 48):
-          of_write(_b2a(_buffer(adata, i, 48)))  # Contains trailing '\n'.
+          of_write(_b2a(_buffer(adata, i, 48)))  # Contains trailing b'\n'.
         abuf[:] = (adata[lal:],)
         adata, asize = (), lam
     of_write(get_gpg_armor_trailer(abuf, asize, acrc, _b2a))
@@ -1429,17 +1482,23 @@ def get_cfb_encrypt_func(encrypt_func, bs, fr):  # fr is IV.
     raise ValueError('CFB fr must be %d bytes, got: %d' % bs, len(fr))
   strxor_bs = make_strxor(bs)
   fr_ary = [fr]
+  do_binary = is_buffer_slice and is_buffer_item_binary
 
   def cfb_encrypt(data):
     ld = len(data)
     if ld % bs:
       raise ValueError('CFB data size must be divisible by %d bytes, got: %d' % bs, ld)
     buf, fr = [], fr_ary[0]
-    for i in xrange(0, ld, bs):
-      buf.append(strxor_bs(encrypt_func(fr), data[i : i + bs]))
-      fr = buf[-1]
+    if do_binary:
+      for i in xrange(0, ld, bs):
+        buf.append(strxor_bs(encrypt_func(fr), binary_type(data[i : i + bs])))
+        fr = buf[-1]
+    else:
+      for i in xrange(0, ld, bs):
+        buf.append(strxor_bs(encrypt_func(fr), data[i : i + bs]))
+        fr = buf[-1]
     fr_ary[0] = fr
-    return ''.join(buf)
+    return b''.join(buf)
 
   return cfb_encrypt
 

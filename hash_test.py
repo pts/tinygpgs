@@ -20,8 +20,13 @@ sys.path[0] = libdir  # Override script directory.
 if sys.version_info[:2] < (2, 6):
   from tinygpgs import f  # Python syntax fixes at import time.
 
-if type(u'') == str:  # Python 3.
+if type(zip()) is not list:  # Python 3.
   xrange, buffer = range, None
+  try:
+    callable
+  except NameError:  # Python 3.1.
+    def callable(obj):
+      return bool(getattr(obj, '__call__', None))
 empty_binary = struct.pack('')
 
 from tinygpgs import hash as hash_mod  # Slow hashes in pure Python.

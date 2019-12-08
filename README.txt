@@ -1,6 +1,6 @@
 tinygpgs: symmetric key encryption compatible with GPG in Python
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-tinygpgs is a fast library and standalone Python 2 script for doing
+tinygpgs is a fast library and standalone Python script for doing
 symmetric key (passphrase-based) encryption and decryption using the OpenPGP
 file format compatible with GPG (GnuPG).
 
@@ -27,7 +27,7 @@ Features:
   with the same defaults.
 * minimal dependencies: Works out-of-the-box with standard Python modules,
   but becomes much faster if PyCrypto is installed.
-* any Python 2: works with any Python 2.4, 2.5, 2.6 or 2.7.
+* any Python: works with any Python >=2.4, including Python 3.
 * no regexps: the implementation doesn't use regexps, thus avoiding speed
   (and potential catastrophic speed) issues
 * binary files: always opens files in binary mode, doesn't do any coversion on
@@ -35,8 +35,6 @@ Features:
 
 Planned features:
 
-* Python 3: Make it work with Python >=3.5 (e.g. Debian 9) as well, keeping
-  Python 2 compatibility.
 * docs: Add full documentation for the file class API.
 
 Explicit non-features:
@@ -50,7 +48,11 @@ Explicit non-features:
 
 Dependencies:
 
-* Python 2.4, 2.5, 2.6 or 2.7. It currently doesn't work with Python 3.
+* Python >=2.4. (Tested with: 2.4, 2.5, 2.6, 2.7, 3.0, 3.1, 3.2, 3.3, 3.4,
+  3.5, 3.6, 3.7, 3.8.) If you use Debian or Ubuntu and you only
+  have the minimal package installed (e.g.
+  `sudo apt-get install python3.5-minimal', then all functionality except
+  for bzip2 compression and decompression works).
 * Optionally, PyCrypto for fast encryption and decryption. If PyCrypto is
   not available, embedded fallback pure Python code is used instead, but
   that can be >400 times slower than PyCrypto.
@@ -123,8 +125,10 @@ sudo to install for all users):
 
   $ python -m pip install tinygpgs pycrypto
 
-To use the command-line tool, run it as `python -m tinygpgs' instead of
-`./tinygpgs'.
+To use the command-line tool, run it as `python -m tinygpgs.__main__'
+instead of `./tinygpgs', except for Python 2.4, which requires
+`python2.4 -m tinygpgs/__main'. For Python >=2.7, `python -m tinygpgs' also
+works.
 
 Using the file class API in the Python library
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -211,8 +215,10 @@ Encrypted input file (hellow5long.bin.gpg) parameters:
 * --force-mdc
 * Partial packet are of size 8192.
 
-Decryption (and decompression) benchmark measurements on Linux amd64,
-Debian 9.4:
+Unless otherwise indicated, benchmarks were run with Python 2.7.13 on a slow
+Linux amd64 system running Debian 9.4.
+
+Decryption (and decompression) benchmark measurements:
 
   gpg (GNUPG) 2.1.18.
   $ time gpg2 -d --pinentry-mode loopback <hellow5long.bin.gpg >hellow5long.out
@@ -221,6 +227,10 @@ Debian 9.4:
   With standard OpenSSL hashlib + PyCrypto.
   $ time python2.7 tinygpgs -d --passphrase abc <hellow5long.bin.gpg >hellow5long.out
   3.980s user
+
+  With Python 3.5, standard OpenSSL hashlib + PyCrypto.
+  $ time python3.5 tinygpgs -d --passphrase abc <hellow5long.bin.gpg >hellow5long.out
+  4.388s user
 
   With standard OpenSSL hashlib + PyCrypto, using the GpgSymmetricFileReader
   file class API.
@@ -238,13 +248,16 @@ Debian 9.4:
   Also it keeps the entire input and output files in memory, using more than
   1.4 times memory than input_size + output_size.
 
-Encryption (and compression) benchmark measurements on Linux amd64, Debian
-9.4:
+Encryption (and compression) benchmark measurements:
 
   <FAST-ENCRYPTION> with standard OpenSSL hashlib + PyCrypto, default.
   $ time python2.7 tinygpgs -c --cipher-algo aes-256 --passphrase abc <hellow5long.bin >hellowc5long.bin.gpg
   info: GPG symmetric encrypt cipher_algo=aes-256 is_py_cipher=0 s2k_mode=iterated-salted digest_algo=sha1 is_py_digest=0 count=65536 len(salt)=8 len(encrypted_session_key)=0 do_mdc=1 len(session_key)=32
   8.828s user
+
+  <FAST-ENCRYPTION>, with Python 3.5.
+  $ time python3.5 tinygpgs -c --cipher-algo aes-256 --passphrase abc <hellow5long.bin >hellowc5long.bin.gpg
+  8.940s user
 
   <FAST-ENCRYPTION>, without MDC, without compression. To be compared with encryptedfile.
   $ time python2.7 tinygpgs -c --cipher-algo aes-256 --passphrase abc --disable-mdc --compress-algo none <hellow5long.bin >hellowc5long.bin.gpg

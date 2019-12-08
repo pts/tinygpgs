@@ -3,22 +3,24 @@
 
 """:" # tinygpgs: symmetric key encryption tool compatible with GPG
 
+type python >/dev/null 2>&1 && exec python -- "$0" ${1+"$@"}
+type python3 >/dev/null 2>&1 && exec python3 -- "$0" ${1+"$@"}
 type python2.7 >/dev/null 2>&1 && exec python2.7 -- "$0" ${1+"$@"}
 type python2.6 >/dev/null 2>&1 && exec python2.6 -- "$0" ${1+"$@"}
 type python2.5 >/dev/null 2>&1 && exec python2.5 -- "$0" ${1+"$@"}
 type python2.4 >/dev/null 2>&1 && exec python2.4 -- "$0" ${1+"$@"}
-exec python -- ${1+"$@"}; exit 1
+echo "fatal: Python interpreter not found for: $0" >&2;exit 1
 
-This script need Python 2.4, 2.5, 2.6 or 2.7. Python 3.x won't work.
-
-This is a small and fast Python 2.x tool to encrypt and decrypt OpenPGP data
-(output of `gpg c' and `gpg --symmetric') with symmetric key.
+This is a small and fast Python tool to encrypt and decrypt OpenPGP data
+(output of `gpg -c' and `gpg --symmetric') with symmetric key.
 
 Typical encryption usage: tinygpgs -c FILE.bin
 
 Typical decryption usage: tinygpgs -d FILE.bin.gpg >FILE.bin
 
 See more info on: https://github.com/pts/tinygpgs
+
+This script works with Python >=2.4, including Python 3.
 
 This script requires standard Python modules only, but becomes much faster
 (<1.26 times slower than gpg(1)) if PyCrypto gets installed.
@@ -28,14 +30,15 @@ All ciphers and hashes defined in the OpenPGP RFC
 """
 
 import os, os.path, sys
-if not ((2, 4) <= sys.version_info[:2] < (3, 0)):
-  sys.stderr.write(
-      'fatal: Python version 2.4, 2.5, 2.6 or 2.7 needed for: %s\n' % __file__)
-  sys.exit(1)
+if sys.version_info[:2] < (2, 4):
+  sys.exit('fatal: Python version >=2.4 needed for: %s' % __file__)
 libdir = os.path.join(os.path.dirname(__file__), 'lib')
 pyname = os.path.join(libdir, 'tinygpgs', 'main.py')
 if not os.path.exists(pyname):
   sys.exit('fatal: missing program file: %s\n' % pyname)
 sys.path[0] = libdir  # Override script directory.
-from tinygpgs import main
-sys.exit(main.main(sys.argv))
+if sys.version_info[:2] < (2, 6):
+  __import__('tinygpgs.f')  # Fix SyntaxError in imports.
+# These imports write .pyc files. TODO(pts): Prevent reading and writing
+# (`python -B' prevents only writing).
+__import__('tinygpgs.__main__')
