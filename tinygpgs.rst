@@ -1,7 +1,7 @@
 ========
 tinygpgs
 ========
-tinygpgs is a fast library and standalone Python 2 script for doing
+tinygpgs is a fast module and standalone Python 2 script for doing
 symmetric key (passphrase-based) encryption and decryption using the OpenPGP
 file format compatible with GPG (GnuPG).
 
@@ -70,7 +70,7 @@ and key generation).
 ------------
 Installation
 ------------
-To get the library, run this::
+To get the module, run this::
 
     $ python -m pip install tinygpgs pycrypto
 
@@ -79,10 +79,11 @@ Please note that tinygpgs works without *pycrypto* as well, but with
 slower.
 
 To get the standalone version of the command-line tool (single executable
-file for Unix, contains the library embedded), see
+file for Unix, contains the module embedded), see
 https://github.com/pts/tinygpgs.
 
-You need Python 2.4, 2.5, 2.6 or 2.7. tinygpgs doesn't work on Python 3 yet.
+You need Python >=2.4 to use tinygpgs as a script or a module. It was tested
+with 2.4 and 3.8, and all the major versions in-between.
 
 ---------
 More info
