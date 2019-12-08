@@ -3,9 +3,9 @@
 Use hashlib for faster implementations.
 """
 
-import itertools
 import struct
 
+from tinygpgs.pyx import xrange, binary_types, to_hex_str, izip, buffer, binary_type
 from tinygpgs.strxor import make_strxor
 
 # --- SHA-512 hash (message digest).
@@ -38,7 +38,7 @@ _sha512_k = (
     0x4cc5d4becb3e42b6, 0x597f299cfc657e2a, 0x5fcb6fab3ad6faec, 0x6c44198c4a475817)
 
 
-def slow_sha512_process(block, hh, _izip=itertools.izip, _rotr64=_sha512_rotr64, _k=_sha512_k):
+def slow_sha512_process(block, hh, _izip=izip, _rotr64=_sha512_rotr64, _k=_sha512_k):
   w = [0] * 80
   w[:16] = struct.unpack('>16Q', block)
   for i in xrange(16, 80):
@@ -75,14 +75,14 @@ class Slow_sha512(object):
   __slots__ = ('_buffer', '_counter', '_h')
 
   def __init__(self, m=None):
-    self._buffer = ''
+    self._buffer = b''
     self._counter = 0
     self._h = self._h0
     if m is not None:
       self.update(m)
 
   def update(self, m):
-    if not isinstance(m, (str, buffer)):
+    if not isinstance(m, binary_types):
       raise TypeError('update() argument 1 must be string, not %s' % (type(m).__name__))
     if not m:
       return
@@ -91,28 +91,28 @@ class Slow_sha512(object):
     self._counter += lm
     self._buffer = None
     if lb + lm < 128:
-      buf += str(m)
+      buf += binary_type(m)
       self._buffer = buf
     else:
       hh, i, _buffer = self._h, 0, buffer
       if lb:
         assert lb < 128
         i = 128 - lb
-        hh = process(buf + m[:i], hh)
+        hh = process(buf + binary_type(m[:i]), hh)
       for i in xrange(i, lm - 127, 128):
         hh = process(_buffer(m, i, 128), hh)
       self._h = hh
-      self._buffer = m[lm - ((lm - i) & 127):]
+      self._buffer = binary_type(m[lm - ((lm - i) & 127):])
 
   def digest(self):
     c = self._counter
     if (c & 127) < 112:
-      return struct.pack('>8Q', *slow_sha512_process(self._buffer + struct.pack('>c%dxQ' % (119 - (c & 127)), '\x80', c << 3), self._h))
+      return struct.pack('>8Q', *slow_sha512_process(self._buffer + struct.pack('>c%dxQ' % (119 - (c & 127)), b'\x80', c << 3), self._h))
     else:
-      return struct.pack('>8Q', *slow_sha512_process(struct.pack('>120xQ', c << 3), slow_sha512_process(self._buffer + struct.pack('>c%dx' % (~c & 127), '\x80'), self._h)))
+      return struct.pack('>8Q', *slow_sha512_process(struct.pack('>120xQ', c << 3), slow_sha512_process(self._buffer + struct.pack('>c%dx' % (~c & 127), b'\x80'), self._h)))
 
   def hexdigest(self):
-    return self.digest().encode('hex')
+    return to_hex_str(self.digest())
 
   def copy(self):
     other = type(self)()
@@ -171,7 +171,7 @@ _sha256_k = (
     0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2)
 
 
-def slow_sha256_process(block, hh, _izip=itertools.izip, _rotr32=_sha256_rotr32, _k=_sha256_k):
+def slow_sha256_process(block, hh, _izip=izip, _rotr32=_sha256_rotr32, _k=_sha256_k):
   w = [0] * 64
   w[:16] = struct.unpack('>16L', block)
   for i in xrange(16, 64):
@@ -208,14 +208,14 @@ class Slow_sha256(object):
   __slots__ = ('_buffer', '_counter', '_h')
 
   def __init__(self, m=None):
-    self._buffer = ''
+    self._buffer = b''
     self._counter = 0
     self._h = self._h0
     if m is not None:
       self.update(m)
 
   def update(self, m):
-    if not isinstance(m, (str, buffer)):
+    if not isinstance(m, binary_types):
       raise TypeError('update() argument 1 must be string, not %s' % (type(m).__name__))
     if not m:
       return
@@ -224,28 +224,28 @@ class Slow_sha256(object):
     self._counter += lm
     self._buffer = None
     if lb + lm < 64:
-      buf += str(m)
+      buf += binary_type(m)
       self._buffer = buf
     else:
       hh, i, _buffer = self._h, 0, buffer
       if lb:
         assert lb < 64
         i = 64 - lb
-        hh = process(buf + m[:i], hh)
+        hh = process(buf + binary_type(m[:i]), hh)
       for i in xrange(i, lm - 63, 64):
         hh = process(_buffer(m, i, 64), hh)
       self._h = hh
-      self._buffer = m[lm - ((lm - i) & 63):]
+      self._buffer = binary_type(m[lm - ((lm - i) & 63):])
 
   def digest(self):
     c = self._counter
     if (c & 63) < 56:
-      return struct.pack('>8L', *slow_sha256_process(self._buffer + struct.pack('>c%dxQ' % (55 - (c & 63)), '\x80', c << 3), self._h))
+      return struct.pack('>8L', *slow_sha256_process(self._buffer + struct.pack('>c%dxQ' % (55 - (c & 63)), b'\x80', c << 3), self._h))
     else:
-      return struct.pack('>8L', *slow_sha256_process(struct.pack('>56xQ', c << 3), slow_sha256_process(self._buffer + struct.pack('>c%dx' % (~c & 63), '\x80'), self._h)))
+      return struct.pack('>8L', *slow_sha256_process(struct.pack('>56xQ', c << 3), slow_sha256_process(self._buffer + struct.pack('>c%dx' % (~c & 63), b'\x80'), self._h)))
 
   def hexdigest(self):
-    return self.digest().encode('hex')
+    return to_hex_str(self.digest())
 
   def copy(self):
     other = type(self)()
@@ -285,7 +285,7 @@ def _sha1_rotl32(x, y):
   return ((x << y) | (x >> (32 - y))) & 0xffffffff
 
 
-def slow_sha1_process(block, hh, _izip=itertools.izip, _rotl=_sha1_rotl32):
+def slow_sha1_process(block, hh, _izip=izip, _rotl=_sha1_rotl32):
   w = [0] * 80
   w[:16] = struct.unpack('>16L', block)
   for i in xrange(16, 80):
@@ -326,14 +326,14 @@ class Slow_sha1(object):
   __slots__ = ('_buffer', '_counter', '_h')
 
   def __init__(self, m=None):
-    self._buffer = ''
+    self._buffer = b''
     self._counter = 0
     self._h = self._h0
     if m is not None:
       self.update(m)
 
   def update(self, m):
-    if not isinstance(m, (str, buffer)):
+    if not isinstance(m, binary_types):
       raise TypeError('update() argument 1 must be string, not %s' % (type(m).__name__))
     if not m:
       return
@@ -342,28 +342,28 @@ class Slow_sha1(object):
     self._counter += lm
     self._buffer = None
     if lb + lm < 64:
-      buf += str(m)
+      buf += binary_type(m)
       self._buffer = buf
     else:
       hh, i, _buffer = self._h, 0, buffer
       if lb:
         assert lb < 64
         i = 64 - lb
-        hh = process(buf + m[:i], hh)
+        hh = process(buf + binary_type(m[:i]), hh)
       for i in xrange(i, lm - 63, 64):
         hh = process(_buffer(m, i, 64), hh)
       self._h = hh
-      self._buffer = m[lm - ((lm - i) & 63):]
+      self._buffer = binary_type(m[lm - ((lm - i) & 63):])
 
   def digest(self):
     c = self._counter
     if (c & 63) < 56:
-      return struct.pack('>5L', *slow_sha1_process(self._buffer + struct.pack('>c%dxQ' % (55 - (c & 63)), '\x80', c << 3), self._h))
+      return struct.pack('>5L', *slow_sha1_process(self._buffer + struct.pack('>c%dxQ' % (55 - (c & 63)), b'\x80', c << 3), self._h))
     else:
-      return struct.pack('>5L', *slow_sha1_process(struct.pack('>56xQ', c << 3), slow_sha1_process(self._buffer + struct.pack('>c%dx' % (~c & 63), '\x80'), self._h)))
+      return struct.pack('>5L', *slow_sha1_process(struct.pack('>56xQ', c << 3), slow_sha1_process(self._buffer + struct.pack('>c%dx' % (~c & 63), b'\x80'), self._h)))
 
   def hexdigest(self):
-    return self.digest().encode('hex')
+    return to_hex_str(self.digest())
 
   def copy(self):
     other = type(self)()
@@ -423,14 +423,14 @@ class Slow_ripemd160(object):
   __slots__ = ('_buffer', '_counter', '_h')
 
   def __init__(self, m=None):
-    self._buffer = ''
+    self._buffer = b''
     self._counter = 0
     self._h = self._h0
     if m is not None:
       self.update(m)
 
   def update(self, m):
-    if not isinstance(m, (str, buffer)):
+    if not isinstance(m, binary_types):
       raise TypeError('update() argument 1 must be string, not %s' % (type(m).__name__))
     if not m:
       return
@@ -439,29 +439,29 @@ class Slow_ripemd160(object):
     self._counter += lm
     self._buffer = None
     if lb + lm < 64:
-      buf += str(m)
+      buf += binary_type(m)
       self._buffer = buf
     else:
       hh, i, _buffer = self._h, 0, buffer
       if lb:
         assert lb < 64
         i = 64 - lb
-        hh = process(buf + m[:i], hh)
+        hh = process(buf + binary_type(m[:i]), hh)
       for i in xrange(i, lm - 63, 64):
         hh = process(_buffer(m, i, 64), hh)
       self._h = hh
-      self._buffer = m[lm - ((lm - i) & 63):]
+      self._buffer = binary_type(m[lm - ((lm - i) & 63):])
 
   def digest(self):
     c = self._counter
     # Merkle-Damgard strengthening, per RFC 1320.
     if (c & 63) < 56:
-      return struct.pack('<5L', *slow_ripemd160_process(self._buffer + struct.pack('<c%dxQ' % (55 - (c & 63)), '\x80', c << 3), self._h))
+      return struct.pack('<5L', *slow_ripemd160_process(self._buffer + struct.pack('<c%dxQ' % (55 - (c & 63)), b'\x80', c << 3), self._h))
     else:
-      return struct.pack('<5L', *slow_ripemd160_process(struct.pack('<56xQ', c << 3), slow_ripemd160_process(self._buffer + struct.pack('<c%dx' % (~c & 63), '\x80'), self._h)))
+      return struct.pack('<5L', *slow_ripemd160_process(struct.pack('<56xQ', c << 3), slow_ripemd160_process(self._buffer + struct.pack('<c%dx' % (~c & 63), b'\x80'), self._h)))
 
   def hexdigest(self):
-    return self.digest().encode('hex')
+    return to_hex_str(self.digest())
 
   def copy(self):
     other = type(self)()
@@ -569,14 +569,14 @@ class Slow_md5(object):
   __slots__ = ('_buffer', '_counter', '_h')
 
   def __init__(self, m=None):
-    self._buffer = ''
+    self._buffer = b''
     self._counter = 0
     self._h = self._h0
     if m is not None:
       self.update(m)
 
   def update(self, m):
-    if not isinstance(m, (str, buffer)):
+    if not isinstance(m, binary_types):
       raise TypeError('update() argument 1 must be string, not %s' % (type(m).__name__))
     if not m:
       return
@@ -585,28 +585,28 @@ class Slow_md5(object):
     self._counter += lm
     self._buffer = None
     if lb + lm < 64:
-      buf += str(m)
+      buf += binary_type(m)
       self._buffer = buf
     else:
       hh, i, _buffer = self._h, 0, buffer
       if lb:
         assert lb < 64
         i = 64 - lb
-        hh = process(buf + m[:i], hh)
+        hh = process(buf + binary_type(m[:i]), hh)
       for i in xrange(i, lm - 63, 64):
         hh = process(_buffer(m, i, 64), hh)
       self._h = hh
-      self._buffer = m[lm - ((lm - i) & 63):]
+      self._buffer = binary_type(m[lm - ((lm - i) & 63):])
 
   def digest(self):
     c = self._counter
     if (c & 63) < 56:
-      return struct.pack('<4L', *slow_md5_process(self._buffer + struct.pack('<c%dxQ' % (55 - (c & 63)), '\x80', c << 3), self._h))
+      return struct.pack('<4L', *slow_md5_process(self._buffer + struct.pack('<c%dxQ' % (55 - (c & 63)), b'\x80', c << 3), self._h))
     else:
-      return struct.pack('<4L', *slow_md5_process(struct.pack('<56xQ', c << 3), slow_md5_process(self._buffer + struct.pack('<c%dx' % (~c & 63), '\x80'), self._h)))
+      return struct.pack('<4L', *slow_md5_process(struct.pack('<56xQ', c << 3), slow_md5_process(self._buffer + struct.pack('<c%dx' % (~c & 63), b'\x80'), self._h)))
 
   def hexdigest(self):
-    return self.digest().encode('hex')
+    return to_hex_str(self.digest())
 
   def copy(self):
     other = type(self)()
