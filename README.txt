@@ -119,7 +119,7 @@ run:
   $ python tinygpgs
 
 Installation as a Python module
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 If you have Python 2 already installed, just run this command (maybe with
 sudo to install for all users):
 
@@ -130,8 +130,53 @@ instead of `./tinygpgs', except for Python 2.4, which requires
 `python2.4 -m tinygpgs/__main'. For Python >=2.7, `python -m tinygpgs' also
 works.
 
-Using the file class API in the Python module
+Installation instructions and usage on Windows
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+There is no installer, you need to run some commands in the command line
+(black Command Prompt window) to download and install. tinygpgs is a
+command-line only application, there is no GUI.
+
+Windows XP or newer (including Windows XP, Windows Vista, Windows 7, Windows
+8, Windows 8.1 and Windows 10) is needed. 32-bit (i386, x86) or 64-bit
+(amd64, x86_64, x64) versions are both fine (tinygpgs contains a 32-bit
+Python 2.6 executable).
+
+Create an empty directory and download these files there:
+
+* https://github.com/pts/tinygpgs/releases/download/2019-12-10w/tinygpgs_win32exec.exe
+* https://github.com/pts/tinygpgs/raw/master/tinygpgs.cmd
+* https://github.com/pts/tinygpgs/raw/master/tinygpgs.single
+
+In a Command Prompt window, cd into this direcrytory and run
+tinygpgs_win32.exe. It will create some more files. Afterwards you can
+remove it (del tinygpgs_win32exec.exe).
+
+Now you can run tinygpgs as usual, e.g. `tinygpgs --help' (without the
+quotes) from that directory. If you want to run it from any directory, then
+add the directory containing tinygpgs.cmd to your PATH, or move all the
+files to C:\Windows\System32.
+
+To upgrade it, download a newer version of tinygpgs.single, and overwrite
+that file.
+
+Limitations:
+
+* It's very slow, because it doesn't have and doesn't use PyCrypto.
+* It doesn't work with filenames containing characters outside the CP-1252
+  encoding (https://en.wikipedia.org/wiki/CP-1252), which is ASCII,
+  ISO-8859-1, plus some Windows-specific characters. (This is a limitation
+  of the Python 2.6 executable used).
+
+Alteratively, if you already have Python installed (preferably with
+PyCrypto, for the huge speed boost) on your Windows system, tinygpgs can use
+that. The installation process is the same, but don't download or run
+tinygpgs_win32exec.exe. (If you've run it already, delete
+tinygpgs_python.exe, but better delete all the files and start downloading
+again.) After that, tinygpgs.cmd will run tinygpgs.single with the
+``python'' command on your system.
+
+Using the file class API in the Python module
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Install the Python module first, then see in
 https://github.com/pts/tinygpgs/blob/master/tinygpgs.rst how to use the
 file class API from your Python code.
