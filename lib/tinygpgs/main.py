@@ -12,7 +12,9 @@ from tinygpgs.pyx import ensure_binary, integer_types, is_stdin_text
 # !! Document encryptedfile and other Python modules.
 # !! Check proper error message in Python 2.3, 2.2, 2.1 and 2.0.
 # !! Add bzip2 compression and decompression using `import subprocess'. This helps with `sudo apt-get install python3.5-minimal'.
-# !! Verify and improve Win32 support (binary mode etc.).
+# !! Add mdc_obj.update using a subprocess.
+# !! Verify and improve Win32 support (binary mode etc.). Add a .cmd file which runs `python tinygpgs.single ...'.
+# !! Make mksingle.py generic, independent of tinygpgs.
 # !! doc: py3 syntax conversion: print statement
 # !! doc: py3 syntax conversion: octal literals: 0123 is SyntaxError, but 0123e6 is OK.
 # !! doc: py3 conversion: basic level: just display an error message on Python 3, octal still has to be converted
