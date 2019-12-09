@@ -56,7 +56,7 @@ def set_fd_binary(fd):
   if sys.platform.startswith('win'):
     import os
     import msvcrt
-    msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
+    msvcrt.setmode(fd, os.O_BINARY)
 
 
 # --- Command-line parsing and main().
