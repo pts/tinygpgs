@@ -84,7 +84,7 @@ class SyntaxFixer(object):
 # --- Rest.
 
 
-if sys.version_info[:2] < (2, 6):
+if sys.version_info[:2] < (2, 6) and 'sdist' not in sys.argv[1:]:
   assert os.path.isfile('lib/tinygpgs/main.py')
   # Fix the Python scripts: lib to libcompat.
   try:
