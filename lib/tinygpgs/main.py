@@ -25,7 +25,7 @@ from tinygpgs.pyx import ensure_binary, integer_types, is_stdin_text
 # !! doc: py3 warnings SUXX:   if size is ():  # SyntaxWarning: "is" with a literal. Did you mean "=="?
 
 # This line is read by setup.py.
-VERSION = '0.15'
+VERSION = '0.16'
 
 # --- Passphrase prompt.
 
