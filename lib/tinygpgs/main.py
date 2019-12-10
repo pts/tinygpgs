@@ -7,6 +7,8 @@ from tinygpgs.pyx import ensure_binary, integer_types, is_stdin_text
 # Here we don't import anything from tinygpgs, to make --help and flag
 # parsing fast. We do lazy imports later as needed.
 
+# !! Add --override-session-key CIPHERALGO:KEYTABLEHEX.
+# !! Add --version.
 # !! gpg -d: WARNING: message was not integrity protected
 # !! Add warning if slow because of Python hash or cipher.
 # !! Document encryptedfile and other Python modules.
@@ -228,8 +230,27 @@ def main(argv, zip_file=None):
       break
     elif arg in ('-c', '--symmetric', '-d', '--decrypt'):  # gpg(1).
       pass  # Already parsed in the loop above.
-    elif arg in ('-e', '--encrypt', '-s', '--sign', '--verify', '--generate-key', '--gen-key', '--edit-key'):  # gpg(1).
+    elif arg in (
+        '-e', '--encrypt', '-s', '--sign', '--verify', '--generate-key',
+        '--gen-key', '--full-generate-key', '--full-gen-key', '--edit-key',
+        '--export', '--import', '--fast-import',
+        '--change-passphrase', '--passwd', '--sign-key',
+        '--lsign-key', '--quick-sign-key', '--quick-lsign-key',
+        '--trusted-key', '--trust-model', '--recipient', '-r',
+        '--recipient-file', '-f', '--hidden-recipient', '-R',
+        '--hidden-recipient-file', '-F', '--encrypt-to', '--hidden-encrypt-to',
+        '--no-encrypt-to', '--sender',
+        '--keyring', '--secret-keyring', '--primary-keyring',
+        ):  # gpg(1).
       raise SystemExit('usage: public-key cryptography not supported: %s' % arg)
+    elif arg in ('--no-options', '--no-keyring', '--no-use-agent'):  # gpg(1).
+      pass
+    elif arg == '--use-agent':
+      raise SystemExit('usage: unsupported flag: %s' % arg)
+    elif arg == '--options':
+      options_filename = get_flag_arg(argv, i)
+      i += 1
+      raise SystemExit('usage: unsupported flag: %s' % arg)
     elif arg == '--pinentry-mode':  # gpg(1).
       if get_flag_arg(argv, i) != 'loopback':
         raise SystemExit('usage: invalid flag value for --pinentry-mode: ' + argv[i])
