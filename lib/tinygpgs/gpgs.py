@@ -653,7 +653,7 @@ def yield_gpg_packets(fread, has_ascii_armor_ary=None):
     yield packet
 
 
-def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash, show_info_func, do_show_session_key):
+def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash, show_info_func, do_show_session_key, override_session_key):
   # https://tools.ietf.org/html/rfc4880
   if not show_info_func:
     show_info_func = lambda msg: 0
@@ -662,29 +662,37 @@ def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash, show_inf
   iter_packets = yield_gpg_packets(fread, has_ascii_armor_ary)
   pkesk_count = 0
   skesk_data = None
+  if override_session_key:
+    if isinstance(override_session_key, str):
+      override_session_key = parse_override_session_key(override_session_key)
+    if not isinstance(override_session_key, tuple) or len(override_session_key) != 2:
+      raise TypeError
   for packet_type, is_partial, data in iter_packets:
     if packet_type == 1:  # PKESK: Public-Key Encrypted Session Key packet.
-      pkesk_count += 1
+      if not override_session_key:
+        pkesk_count += 1
       #import sys; sys.stderr.write('PKESK %s\n' % to_hex_str(data))
     elif packet_type == 3:  # SKESK: Symmetric-Key Encrypted Session Key packet.
-      if skesk_data is not None:
-        # TODO(pts): Add support, gpg(1) may also support it.
-        raise ValueError('Multiple SKESK packets found.')
-      if not 4 <= len(data) <= 46:
-        raise ValueError('Bad GPG symmetric encrypted data (bad SKESK packet size).')
-      if is_partial:  # Should never happen, SKESK packets are shorter than 512 bytes.
-        raise ValueError('Found partial SKESK packet.')
-      skesk_data = data
+      if not override_session_key:
+        if skesk_data is not None:
+          # TODO(pts): Add support, gpg(1) may also support it.
+          raise ValueError('Multiple SKESK packets found.')
+        if not 4 <= len(data) <= 46:
+          raise ValueError('Bad GPG symmetric encrypted data (bad SKESK packet size).')
+        if is_partial:  # Should never happen, SKESK packets are shorter than 512 bytes.
+          raise ValueError('Found partial SKESK packet.')
+        skesk_data = data
     elif packet_type in (9, 18):
       break
     else:
       raise ValueError('Expected symmetric data packet type, got: %d' % packet_type)
   else:
     raise ValueError('EOF before encrypted data packet.')
-  if not (skesk_data or pkesk_count):
-    raise ValueError('Missing SKESK and PKESK packets.')
-  if not skesk_data and pkesk_count:
-    raise ValueError('GPG public-key encrypted data found, but not supported.')
+  if not (skesk_data or override_session_key):
+    if pkesk_count:
+      raise ValueError('GPG public-key encrypted data found, but not supported.')
+    else:
+      raise ValueError('Missing SKESK and PKESK packets.')
   has_mdc = packet_type == 18
   if has_mdc:
     if not data:
@@ -697,7 +705,12 @@ def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash, show_inf
     data_ary = [is_partial, buffer(data)]
   del data
 
-  if skesk_data:
+  if override_session_key:
+    cipher_algo, session_key = override_session_key
+    show_info_func('GPG symmetric override_session_key cipher_algo=%s has_mdc=%d' %
+                   (CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), int(has_mdc)))
+  else:
+    assert skesk_data
     version, cipher_algo, s2k_mode, digest_algo = struct.unpack(
         '>BBBB', buffer(skesk_data, 0, 4))
     if version != 4:
@@ -718,53 +731,52 @@ def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash, show_inf
         count = (16 + (b & 15)) << ((b >> 4) + 6)
       else:
         count = 0
-  show_info_func('GPG symmetric cipher_algo=%s s2k_mode=%s digest_algo=%s count=%d len(salt)=%d len(encrypted_session_key)=%d has_ascii_armor=%d has_mdc=%d' %
-                 (CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), S2K_MODES.get(s2k_mode, s2k_mode), DIGEST_ALGOS.get(digest_algo, digest_algo), count, len(salt), len(skesk_data) - i, int(has_ascii_armor_ary[0]), int(has_mdc)))
-  if do_show_session_key:
-    show_info_func('GPG symmetric encrypted_session_key=%r' % ':'.join((str(cipher_algo), to_hex_str(skesk_data[i:]).upper())))
-  if cipher_algo not in CIPHER_ALGOS:
-    raise ValueError('Unknown SKESK cipher_algo: %d' % cipher_algo)
-  if s2k_mode not in S2K_MODES:
-    raise ValueError('Unknown SKESK s2k_mode: %d' % s2k_mode)
-  if digest_algo not in DIGEST_ALGOS:
-    raise ValueError('Unknown SKESK digest_algo: %d' % digest_algo)
-  digest_func = lambda data=b'': new_hash(DIGEST_ALGOS[digest_algo], data, is_slow_hash)
-  show_info_func('GPG symmetric is_py_digest=%d' % int(is_python_function(digest_func().update)))
-  keytable_size = KEYTABLE_SIZES[cipher_algo]
-
-  if callable(passphrase):
-    passphrase = passphrase()
-  passphrase = ensure_binary(passphrase)
-  # Correct, same as:
-  # gpg --list-packets -vvvvv --show-session-key --pinentry-mode loopback hellow4.bin.gpg
-  session_key = get_gpg_s2k_string_to_key(keytable_size, salt, count, digest_func, passphrase)  # Slow.
-  del passphrase, keytable_size, salt, digest_func
-  if skesk_data and len(skesk_data) > i:  # Encrypted session key.
+    show_info_func('GPG symmetric cipher_algo=%s s2k_mode=%s digest_algo=%s count=%d len(salt)=%d len(encrypted_session_key)=%d has_ascii_armor=%d has_mdc=%d' %
+                   (CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), S2K_MODES.get(s2k_mode, s2k_mode), DIGEST_ALGOS.get(digest_algo, digest_algo), count, len(salt), len(skesk_data) - i, int(has_ascii_armor_ary[0]), int(has_mdc)))
     if do_show_session_key:
-      show_info_func('GPG symmetric derived_session_key_key=%r' % ':'.join((str(cipher_algo), to_hex_str(session_key).upper())))
-    if s2k_mode == 0:
-      raise ValueError('Encrypted session key needs salt.')
-    encrypt_func, _, bs = get_gpg_encrypt_func(cipher_algo, session_key, is_slow_cipher)
-    strxor_bs = make_strxor(bs)  # For cipher_algo block size.
-    fre = encrypt_func(b'\0' * bs)
-    session_key = []
-    for i in xrange(i, len(skesk_data), bs):
-      datae = skesk_data[i : i + bs]
-      data1 = strxor_bs(datae + b'\0' * (bs - len(datae)), fre)[:len(datae)]
-      if session_key:
-        session_key.append(data1)
-      else:
-        cipher_algo = ord(data1[:1])
-        if cipher_algo not in CIPHER_ALGOS:
-          raise ValueError('Unknown encrypted session key cipher_algo: %d' % cipher_algo)
-        session_key.append(data1[1:])  # Short copy.
-      if len(datae) < bs:
-        break
-      fre = encrypt_func(datae)
-    session_key = b''.join(session_key)
-    if len(session_key) != KEYTABLE_SIZES[cipher_algo]:
-      raise ValueError('Encrypted session key size must be %d for cipher_algo %s, got: %d' %
-                       (KEYTABLE_SIZES[cipher_algo], CIPHER_ALGOS[cipher_algo], len(session_key)))
+      show_info_func('GPG symmetric encrypted_session_key=%r' % ':'.join((str(cipher_algo), to_hex_str(skesk_data[i:]).upper())))
+    if cipher_algo not in CIPHER_ALGOS:
+      raise ValueError('Unknown SKESK cipher_algo: %d' % cipher_algo)
+    if s2k_mode not in S2K_MODES:
+      raise ValueError('Unknown SKESK s2k_mode: %d' % s2k_mode)
+    if digest_algo not in DIGEST_ALGOS:
+      raise ValueError('Unknown SKESK digest_algo: %d' % digest_algo)
+    digest_func = lambda data=b'': new_hash(DIGEST_ALGOS[digest_algo], data, is_slow_hash)
+    show_info_func('GPG symmetric is_py_digest=%d' % int(is_python_function(digest_func().update)))
+    keytable_size = KEYTABLE_SIZES[cipher_algo]
+    if callable(passphrase):
+      passphrase = passphrase()
+    passphrase = ensure_binary(passphrase)
+    # Correct, same as:
+    # gpg --list-packets -vvvvv --show-session-key --pinentry-mode loopback hellow4.bin.gpg
+    session_key = get_gpg_s2k_string_to_key(keytable_size, salt, count, digest_func, passphrase)  # Slow.
+    del passphrase, keytable_size, salt, digest_func
+    if skesk_data and len(skesk_data) > i:  # Encrypted session key.
+      if do_show_session_key:
+        show_info_func('GPG symmetric derived_session_key_key=%r' % ':'.join((str(cipher_algo), to_hex_str(session_key).upper())))
+      if s2k_mode == 0:
+        raise ValueError('Encrypted session key needs salt.')
+      encrypt_func, _, bs = get_gpg_encrypt_func(cipher_algo, session_key, is_slow_cipher)
+      strxor_bs = make_strxor(bs)  # For cipher_algo block size.
+      fre = encrypt_func(b'\0' * bs)
+      session_key = []
+      for i in xrange(i, len(skesk_data), bs):
+        datae = skesk_data[i : i + bs]
+        data1 = strxor_bs(datae + b'\0' * (bs - len(datae)), fre)[:len(datae)]
+        if session_key:
+          session_key.append(data1)
+        else:
+          cipher_algo = ord(data1[:1])
+          if cipher_algo not in CIPHER_ALGOS:
+            raise ValueError('Unknown encrypted session key cipher_algo: %d' % cipher_algo)
+          session_key.append(data1[1:])  # Short copy.
+        if len(datae) < bs:
+          break
+        fre = encrypt_func(datae)
+      session_key = b''.join(session_key)
+      if len(session_key) != KEYTABLE_SIZES[cipher_algo]:
+        raise ValueError('Encrypted session key size must be %d for cipher_algo %s, got: %d' %
+                         (KEYTABLE_SIZES[cipher_algo], CIPHER_ALGOS[cipher_algo], len(session_key)))
   del skesk_data
   if do_show_session_key:
     # Showing it with the same display style as gpg(1).
@@ -812,13 +824,14 @@ def get_decrypt_symmetric_gpg_literal_packet_reader(
     fread,
     passphrase,  # This is the first argument, order of others can change.
     is_slow_cipher=False, is_slow_hash=False,
-    show_info_func=None, do_show_session_key=False):
+    show_info_func=None, do_show_session_key=False,
+    override_session_key=None):
   # Don't add more arguments above, this function is used in
   # GpgSymmetricFileReader.
   _buffer = buffer
   cipher_algo, session_key, has_mdc, fread, show_info_func = open_symmetric_gpg(
       fread, passphrase, is_slow_cipher, is_slow_hash, show_info_func,
-      do_show_session_key)
+      do_show_session_key, override_session_key)
   del passphrase
   show_info_func(
       'GPG symmetric session has_mdc=%d cipher_algo=%s len(session_key)=%d' %
@@ -1532,3 +1545,23 @@ def get_last_nonpartial_packet_header(size, packet_type, _pack=struct.pack):
       return _pack('>BB', 192 | b >> 8, b & 255)
     else:
       return _pack('>BL', 255, size)
+
+
+def parse_override_session_key(override_session_key):
+  items = override_session_key.split(':', 1)
+  if len(items) != 2:
+    raise ValueError('Missing colon.')
+  try:
+    cipher_algo = int(items[0])
+  except ValueError:
+    raise ValueError('Bad syntax for cipher_algo.')
+  try:
+    keytable = binascii.unhexlify(ensure_binary(items[1]))
+  except ValueError:
+    raise ValueError('Bad syntax for keytable hex.')
+  keytable_size = KEYTABLE_SIZES.get(cipher_algo)
+  if keytable_size is None:
+    raise ValueError('Unknown cipher_algo: %d' % cipher_algo)
+  if keytable_size != len(keytable):
+    raise ValueError('Expected keytable of %d bytes, got: %d' % (keytable_size, len(keytable)))
+  return cipher_algo, keytable

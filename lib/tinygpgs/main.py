@@ -133,6 +133,12 @@ Encryption-only flags:
   value, all files are treated as binary.
 * --mtime <mtime>: Store the specified last modification time in the output.
   The value is an integer, the Unix timestamp. The default is 0.
+
+Decryption-only flags:
+
+* --override-session-key: <cipher-algo-int>:<session-key-hex>: Ignore the
+  session key in the file, use the specified value instead. Useful for
+  revealing the plaintext withouth revealing the passphrase.
 """
 
 def usage(argv0, do_flags=False):
@@ -196,6 +202,7 @@ def main(argv, zip_file=None):
   params['passphrase'] = ()
   params['show_info_func'] = show_info
   encrypt_params = {}
+  decrypt_params = {}
   flags_with_arg = (
       '--pinentry-mode', '--passphrase', '--passphrase-fd', '--passphrase-file',
       '--passphrase-repeat', '--bufcap', '--output', '--cipher-algo',
@@ -239,11 +246,10 @@ def main(argv, zip_file=None):
         '--trusted-key', '--trust-model', '--recipient', '-r',
         '--recipient-file', '-f', '--hidden-recipient', '-R',
         '--hidden-recipient-file', '-F', '--encrypt-to', '--hidden-encrypt-to',
-        '--no-encrypt-to', '--sender',
-        '--keyring', '--secret-keyring', '--primary-keyring',
+        '--no-encrypt-to', '--sender', '--primary-keyring',
         ):  # gpg(1).
       raise SystemExit('usage: public-key cryptography not supported: %s' % arg)
-    elif arg in ('--no-options', '--no-keyring', '--no-use-agent'):  # gpg(1).
+    elif arg in ('--no-options', '--no-keyring', '--no-default-keyring', '--no-use-agent'):  # gpg(1).
       pass
     elif arg == '--use-agent':
       raise SystemExit('usage: unsupported flag: %s' % arg)
@@ -251,9 +257,13 @@ def main(argv, zip_file=None):
       options_filename = get_flag_arg(argv, i)
       i += 1
       raise SystemExit('usage: unsupported flag: %s' % arg)
+    elif arg in ('--keyring', '--secret-keyring'):
+      if get_flag_arg(argv, i) != '/dev/null':
+        raise SystemExit('usage: unsupported flag value, expecting /dev/null: %s %s' % (arg, argv[i]))
+      i += 1
     elif arg == '--pinentry-mode':  # gpg(1).
       if get_flag_arg(argv, i) != 'loopback':
-        raise SystemExit('usage: invalid flag value for --pinentry-mode: ' + argv[i])
+        raise SystemExit('usage: unsupported flag value, expecting loopback: %s %s' % (arg, argv[i]))
       i += 1
     elif arg in ('--slow-cipher', '--no-slow-cipher'):
       params['is_slow_cipher'] = is_yes
@@ -296,6 +306,14 @@ def main(argv, zip_file=None):
       i += 1
     elif arg in ('-o', '--output'):  # gpg(1).
       output_file = get_flag_arg(argv, i)
+      i += 1
+    elif not do_encrypt and arg == '--override-session-key':  # gpg(1).
+      flag_value = get_flag_arg(argv, i)
+      from tinygpgs import gpgs
+      try:
+        decrypt_params['override_session_key'] = gpgs.parse_override_session_key(flag_value)
+      except ValueError as e:
+        raise SystemExit('usage: invalid flag syntax (%s): %s %s' % (e, arg, argv[i]))
       i += 1
     elif do_encrypt and arg == '--cipher-algo':  # gpg(1).
       encrypt_params['cipher'] = get_flag_arg(argv, i)
@@ -430,12 +448,13 @@ def main(argv, zip_file=None):
           f.close()
       else:
         gpgs.encrypt_symmetric_gpg(inf.read, of, **encrypt_params)
-    else:
+    else:  # Decrypt.
+      decrypt_params.update(params)  # Shouldn't have common fields.
       from tinygpgs import gpgs
       try:
         if file_class_mode:
           from tinygpgs import file
-          f = file.GpgSymmetricFileReader(inf.read, 'rb', **params)
+          f = file.GpgSymmetricFileReader(inf.read, 'rb', **decrypt_params)
           try:
             if file_class_mode == 2:
               of.write(f.read())
@@ -448,7 +467,7 @@ def main(argv, zip_file=None):
           finally:
             f.close()
         else:
-          gpgs.decrypt_symmetric_gpg(inf.read, of, **params)
+          gpgs.decrypt_symmetric_gpg(inf.read, of, **decrypt_params)
       except gpgs.BadPassphraseError as e:
         msg = str(e)
         sys.stderr.write('fatal: %s%s\n' % (msg[0].lower(), msg[1:].rstrip('.')))
