@@ -7,7 +7,15 @@ from tinygpgs.pyx import ensure_binary, integer_types, is_stdin_text
 # Here we don't import anything from tinygpgs, to make --help and flag
 # parsing fast. We do lazy imports later as needed.
 
-# !! Add --override-session-key CIPHERALGO:KEYTABLEHEX.
+# !! Add --speed-test with dependency checks on Crypto.Cipher._AES.
+# !! Add --install-pycrypto, make it work as root and non-root, make it
+#    download pip first if needed, make it remind the user about
+#    `apt-get install python-dev' (not needed on macOS, needed on Linux;
+#    maybe python3-dev), make it do `python -m pip install --user pycrypto',
+#    or `sudo apt-get install pycrypto'.
+# !! Add --install-hashlib for Python 2.4.
+# !! Add section about installing pycrypto (even on macOS) to README.txt,
+#    including --speed-test.
 # !! Add --version.
 # !! gpg -d: WARNING: message was not integrity protected
 # !! Add warning if slow because of Python hash or cipher.
