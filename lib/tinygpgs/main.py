@@ -16,7 +16,6 @@ from tinygpgs.pyx import ensure_binary, integer_types, is_stdin_text
 # !! Add --install-hashlib for Python 2.4.
 # !! Add section about installing pycrypto (even on macOS) to README.txt,
 #    including --speed-test.
-# !! Add --version.
 # !! Add warning if slow because of Python hash or cipher.
 # !! Document encryptedfile and other Python modules.
 # !! Check proper error message in Python 2.3, 2.2, 2.1 and 2.0.
@@ -148,18 +147,20 @@ Decryption-only flags:
   revealing the plaintext withouth revealing the passphrase.
 """
 
-def usage(argv0, do_flags=False):
+LICENSE = (
+    'This is free software, MIT license. '
+    'There is NO WARRANTY. Use at your risk.\n')
+
+def show_usage(argv0, do_flags=False):
   flag_doc = FLAG_DOC * bool(do_flags)
   if flag_doc.startswith('\n '):
     flag_doc = flag_doc.replace('\n ', '\n')
   sys.stderr.write(
-      'tinygpgs v%s: symmetric key encryption tool compatible with GPG\n'
-      'This is free software, MIT license. '
-      'There is NO WARRANTY. Use at your risk.\n'
+      'tinygpgs %s: symmetric key encryption tool compatible with GPG\n%s'
       'encryption usage: %s -c [<flag> ...] [FILE.bin]\n'
       'decryption usage: %s -d [<flag> ...] FILE.bin.gpg >FILE.bin\n'
       'https://github.com/pts/tinygpgs\n%s' %
-      (VERSION, argv0, argv0, flag_doc))
+      (VERSION, LICENSE, argv0, argv0, flag_doc))
 
 
 def get_flag_arg(argv, i):
@@ -196,9 +197,31 @@ def show_info(msg):
   sys.stderr.flush()  # Automatic, but play it safe.
 
 
+def show_version():
+  from tinygpgs import cipher
+  from tinygpgs import hash
+  compressions = ['Uncompressed']
+  try:
+    import zlib
+    compressions.extend(('ZIP', 'ZLIB'))
+  except ImportError:
+    pass
+  try:
+    import bz2
+    compressions.append('BZIP2')
+  except ImportError:
+    pass
+  cipher_map = {'DES3': '3DES'}
+  ciphers = sorted(cipher_map.get(c, c) for c in (n.upper() for n in dir(cipher) if callable(getattr(cipher, n)) and callable(getattr(getattr(cipher, n), 'encrypt', None))))
+  hashes = sorted(n[5:].upper() for n in dir(hash) if n.startswith('Slow_') and callable(getattr(hash, n)) and callable(getattr(getattr(hash, n), 'update', None)))
+  # Format similar to GPG 2.1.
+  sys.stdout.write('tinygpgs %s\n%s\nSupported algorithms:\nCipher: %s\nHash: %s\nCompression: %s\n' %
+                   (VERSION, LICENSE, ', '.join(ciphers), ', '.join(hashes), ', '.join(compressions)))
+
+
 def main(argv, zip_file=None):
   if len(argv) < 2:
-    usage(argv[0])
+    show_usage(argv[0])
     sys.exit(1)
   argv = list(argv)
   is_batch = do_passphrase_twice = is_yes_flag = False
@@ -229,12 +252,15 @@ def main(argv, zip_file=None):
     elif arg in ('-d', '--decrypt'):  # Like gpg(1).
       do_encrypt = False
     elif arg == '--help':
-      usage(argv[0], do_flags=True)
+      show_usage(argv[0], do_flags=True)
+      sys.exit(0)
+    elif arg == '--version':
+      show_version()
       sys.exit(0)
     elif arg in flags_with_arg and i < len(argv):
       i += 1
   if do_encrypt is None:
-    usage(argv[0])
+    show_usage(argv[0])
     sys.exit(1)
   i = 1
   while i < len(argv):
