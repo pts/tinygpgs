@@ -221,6 +221,9 @@ def main(argv, zip_file=None):
       do_encrypt = True
     elif arg in ('-d', '--decrypt'):  # Like gpg(1).
       do_encrypt = False
+    elif arg == '--help':
+      usage(argv[0], do_flags=True)
+      sys.exit(0)
     elif arg in flags_with_arg and i < len(argv):
       i += 1
   if do_encrypt is None:
