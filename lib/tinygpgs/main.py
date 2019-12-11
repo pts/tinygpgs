@@ -471,6 +471,8 @@ def main(argv, zip_file=None):
       if ('bzip2_compress_level' in encrypt_params and
           encrypt_params.get('compress', '').lower() == 'bzip2'):
         encrypt_params['compress_level'] = encrypt_params.pop('bzip2_compress_level')
+      else:
+        encrypt_params.pop('bzip2_compress_level', None)
       # Defaults in GPG <2.1, including 1.4.18.
       #encrypt_params.setdefault('cipher', 'sha256')
       #encrypt_params.setdefault('compress', 'none')
