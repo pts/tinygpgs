@@ -526,7 +526,7 @@ def yield_gpg_binary_packets(fread, c0=b''):
             size -= size2
         assert 0 < size <= 8192
       elif size > 46:
-        if not (packet_type == 2 and size < 8192):
+        if not (packet_type in (1, 2) and size < 8192):
           # We could easily handle megabytes, but the output of `gpg
           # --symmetric' just doesn't have such packets.
           raise ValueError('Packet size unusually large: type %d, size %d' %
@@ -636,19 +636,19 @@ def yield_gpg_packets(fread, has_ascii_armor_ary=None):
   b, packet_type = ord(c), -1
   if b & 128:
     packet_type = (b & 63) >> ((~b >> 5) & 2)
-  if packet_type != 3:  # packet_type == 3 (SKESK), c in b'\x8c\x8d\x8e\xc3'.
+  # packet_type == 1 (PKESK).
+  # packet_type == 3 (SKESK), c in b'\x8c\x8d\x8e\xc3'.
+  if packet_type not in (1, 3):
     if packet_type < 0:
       raise ValueError('Bad GPG data, packet expected.')
     if not 1 <= packet_type <= 19:
       raise ValueError('Bad GPG data, packet expected, got unusual packet of type: %d' % packet_type)
     # TODO(pts): Add support for `gpg -e --sign': b'\x90\x91\x92\xc4' (packet_type == 4), also packet_type == 2.
     if packet_type == 8:
-      raise ValueError('GPG symmetric key encrypted data expected, got compressed data (probably public-key signed message).')
+      raise ValueError('GPG symmetric key encrypted data expected, found compressed data (probably public-key signed message).')
     if packet_type in (2, 4):
-      raise ValueError('GPG symmetric key encrypted data expected, got public-key signed data.')
-    if packet_type == 1:
-      raise ValueError('GPG symmetric key encrypted data expected, got public-key encrypted data.')
-    raise ValueError('Bad GPG symmetric encrypted data (SKESK packet expected), got packet of type: %d' % packet_type)
+      raise ValueError('GPG symmetric key encrypted data expected, found public-key signed data.')
+    raise ValueError('Bad GPG symmetric encrypted data (SKESK or PKESK packet expected), got packet of type: %d' % packet_type)
   for packet in yield_gpg_binary_packets(fread, c):
     yield packet
 
@@ -660,40 +660,68 @@ def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash, show_inf
   is_prev_partial, has_ascii_armor_ary = False, []
   cipher_algo = session_key = None
   iter_packets = yield_gpg_packets(fread, has_ascii_armor_ary)
+  pkesk_count = 0
+  skesk_data = None
   for packet_type, is_partial, data in iter_packets:
-    break
-  else:
-    raise ValueError('EOF before SKESK packet.')
-  # Symmetric-Key Encrypted Session Key Packet.
-  if packet_type != 3:
-    raise ValueError('Expected SKESK packet type, got: %d' % packet_type)
-  if not 4 <= len(data) <= 46:
-    raise ValueError('Bad GPG symmetric encrypted data (bad SKESK packet size).')
-  assert not is_partial
-  version, cipher_algo, s2k_mode, digest_algo = struct.unpack(
-      '>BBBB', buffer(data, 0, 4))
-  if version != 4:
-    raise ValueError('SKESK version 4 expected, got %d' % version)
-  i = 4
-  if s2k_mode == 0:
-    salt, count = b'', 0
-  else:
-    salt = data[i : i + 8]
-    if len(salt) < 8:
-      raise ValueError('EOF in SKESK salt.')
-    i += 8
-    if s2k_mode == 3:
-      if i >= len(data):
-        raise ValueError('EOF in SKESK iterated-salted count.')
-      b = ord(data[i : i + 1])
-      i += 1
-      count = (16 + (b & 15)) << ((b >> 4) + 6)
+    if packet_type == 1:  # PKESK: Public-Key Encrypted Session Key packet.
+      pkesk_count += 1
+      #import sys; sys.stderr.write('PKESK %s\n' % to_hex_str(data))
+    elif packet_type == 3:  # SKESK: Symmetric-Key Encrypted Session Key packet.
+      if skesk_data is not None:
+        # TODO(pts): Add support, gpg(1) may also support it.
+        raise ValueError('Multiple SKESK packets found.')
+      if not 4 <= len(data) <= 46:
+        raise ValueError('Bad GPG symmetric encrypted data (bad SKESK packet size).')
+      if is_partial:  # Should never happen, SKESK packets are shorter than 512 bytes.
+        raise ValueError('Found partial SKESK packet.')
+      skesk_data = data
+    elif packet_type in (9, 18):
+      break
     else:
-      count = 0
-  show_info_func('GPG symmetric cipher_algo=%s s2k_mode=%s digest_algo=%s count=%d len(salt)=%d len(encrypted_session_key)=%d has_ascii_armor=%d' %
-                 (CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), S2K_MODES.get(s2k_mode, s2k_mode), DIGEST_ALGOS.get(digest_algo, digest_algo), count, len(salt), len(data) - i, int(has_ascii_armor_ary[0])))
+      raise ValueError('Expected symmetric data packet type, got: %d' % packet_type)
+  else:
+    raise ValueError('EOF before encrypted data packet.')
+  if not (skesk_data or pkesk_count):
+    raise ValueError('Missing SKESK and PKESK packets.')
+  if not skesk_data and pkesk_count:
+    raise ValueError('GPG public-key encrypted data found, but not supported.')
+  has_mdc = packet_type == 18
+  if has_mdc:
+    if not data:
+      raise ValueError('Integrity-protected packet too short.')
+    version = ord(data[:1])
+    if version != 1:
+      raise ValueError('Integrity-protected packet version 1 expected, got: %d' % version)
+    data_ary = [is_partial, buffer(data, 1)]
+  else:
+    data_ary = [is_partial, buffer(data)]
+  del data
+
+  if skesk_data:
+    version, cipher_algo, s2k_mode, digest_algo = struct.unpack(
+        '>BBBB', buffer(skesk_data, 0, 4))
+    if version != 4:
+      raise ValueError('SKESK version 4 expected, got %d' % version)
+    i = 4
+    if s2k_mode == 0:
+      salt, count = b'', 0
+    else:
+      salt = skesk_data[i : i + 8]
+      if len(salt) < 8:
+        raise ValueError('EOF in SKESK salt.')
+      i += 8
+      if s2k_mode == 3:
+        if i >= len(skesk_data):
+          raise ValueError('EOF in SKESK iterated-salted count.')
+        b = ord(skesk_data[i : i + 1])
+        i += 1
+        count = (16 + (b & 15)) << ((b >> 4) + 6)
+      else:
+        count = 0
+  show_info_func('GPG symmetric cipher_algo=%s s2k_mode=%s digest_algo=%s count=%d len(salt)=%d len(encrypted_session_key)=%d has_ascii_armor=%d has_mdc=%d' %
+                 (CIPHER_ALGOS_ALL.get(cipher_algo, cipher_algo), S2K_MODES.get(s2k_mode, s2k_mode), DIGEST_ALGOS.get(digest_algo, digest_algo), count, len(salt), len(skesk_data) - i, int(has_ascii_armor_ary[0]), int(has_mdc)))
   if do_show_session_key:
-    show_info_func('GPG symmetric encrypted_session_key=%r' % ':'.join((str(cipher_algo), to_hex_str(data[i:]).upper())))
+    show_info_func('GPG symmetric encrypted_session_key=%r' % ':'.join((str(cipher_algo), to_hex_str(skesk_data[i:]).upper())))
   if cipher_algo not in CIPHER_ALGOS:
     raise ValueError('Unknown SKESK cipher_algo: %d' % cipher_algo)
   if s2k_mode not in S2K_MODES:
@@ -703,24 +731,6 @@ def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash, show_inf
   digest_func = lambda data=b'': new_hash(DIGEST_ALGOS[digest_algo], data, is_slow_hash)
   show_info_func('GPG symmetric is_py_digest=%d' % int(is_python_function(digest_func().update)))
   keytable_size = KEYTABLE_SIZES[cipher_algo]
-  for packet_type, is_partial, data2 in iter_packets:
-    break
-  else:
-    raise ValueError('EOF after SKESK packet.')
-  if packet_type == 9:
-    has_mdc = False
-    data_ary = [is_partial, buffer(data2)]
-  elif packet_type == 18:
-    has_mdc = True
-    if not data2:
-      raise ValueError('Integrity-protected packet too short.')
-    version = ord(data2[:1])
-    if version != 1:
-      raise ValueError('Integrity-protected packet version 1 expected, got: %d' % version)
-    data_ary = [is_partial, buffer(data2, 1)]
-  else:
-    raise ValueError('Expected symmetric data packet type, got: %d' % packet_type)
-  del data2
 
   if callable(passphrase):
     passphrase = passphrase()
@@ -729,8 +739,7 @@ def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash, show_inf
   # gpg --list-packets -vvvvv --show-session-key --pinentry-mode loopback hellow4.bin.gpg
   session_key = get_gpg_s2k_string_to_key(keytable_size, salt, count, digest_func, passphrase)  # Slow.
   del passphrase, keytable_size, salt, digest_func
-
-  if len(data) > i:  # Encrypted session key.
+  if skesk_data and len(skesk_data) > i:  # Encrypted session key.
     if do_show_session_key:
       show_info_func('GPG symmetric derived_session_key_key=%r' % ':'.join((str(cipher_algo), to_hex_str(session_key).upper())))
     if s2k_mode == 0:
@@ -739,8 +748,8 @@ def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash, show_inf
     strxor_bs = make_strxor(bs)  # For cipher_algo block size.
     fre = encrypt_func(b'\0' * bs)
     session_key = []
-    for i in xrange(i, len(data), bs):
-      datae = data[i : i + bs]
+    for i in xrange(i, len(skesk_data), bs):
+      datae = skesk_data[i : i + bs]
       data1 = strxor_bs(datae + b'\0' * (bs - len(datae)), fre)[:len(datae)]
       if session_key:
         session_key.append(data1)
@@ -756,6 +765,7 @@ def open_symmetric_gpg(fread, passphrase, is_slow_cipher, is_slow_hash, show_inf
     if len(session_key) != KEYTABLE_SIZES[cipher_algo]:
       raise ValueError('Encrypted session key size must be %d for cipher_algo %s, got: %d' %
                        (KEYTABLE_SIZES[cipher_algo], CIPHER_ALGOS[cipher_algo], len(session_key)))
+  del skesk_data
   if do_show_session_key:
     # Showing it with the same display style as gpg(1).
     show_info_func('GPG symmetric session_key=%r' % ':'.join((str(cipher_algo), to_hex_str(session_key).upper())))
