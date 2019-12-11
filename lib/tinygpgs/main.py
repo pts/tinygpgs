@@ -2,7 +2,7 @@
 
 import sys
 
-from tinygpgs.pyx import ensure_binary, integer_types, is_stdin_text
+from tinygpgs.pyx import ensure_binary, integer_types, is_stdin_text, is_python_function, callable
 
 # Here we don't import anything from tinygpgs, to make --help and flag
 # parsing fast. We do lazy imports later as needed.
@@ -211,12 +211,21 @@ def show_version():
     compressions.append('BZIP2')
   except ImportError:
     pass
-  cipher_map = {'DES3': '3DES'}
+  cipher_map = {'DES3': '3DES', 'CAST': 'CAST5'}
   ciphers = sorted(cipher_map.get(c, c) for c in (n.upper() for n in dir(cipher) if callable(getattr(cipher, n)) and callable(getattr(getattr(cipher, n), 'encrypt', None))))
+  from tinygpgs import gpgs
+  ciphers2 = []
+  for c in ciphers:
+    cipher_cons, _, keytable_size = gpgs.get_cipher_cons(c + '-128' * (c in ('AES', 'TWOFISH')), False, False)
+    ciphers2.append(''.join((c, ' (slow)' * is_python_function(cipher_cons(b'\0' * keytable_size).encrypt))))
   hashes = sorted(n[5:].upper() for n in dir(hash) if n.startswith('Slow_') and callable(getattr(hash, n)) and callable(getattr(getattr(hash, n), 'update', None)))
+  hashes2 = []
+  for n in hashes:
+    mdc_obj = gpgs.new_hash(n)
+    hashes2.append(''.join((n, ' (slow)' * is_python_function(gpgs.new_hash(n).update))))
   # Format similar to GPG 2.1.
   sys.stdout.write('tinygpgs %s\n%s\nSupported algorithms:\nCipher: %s\nHash: %s\nCompression: %s\n' %
-                   (VERSION, LICENSE, ', '.join(ciphers), ', '.join(hashes), ', '.join(compressions)))
+                   (VERSION, LICENSE, ', '.join(ciphers2), ', '.join(hashes2), ', '.join(compressions)))
 
 
 def main(argv, zip_file=None):

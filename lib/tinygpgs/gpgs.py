@@ -10,7 +10,7 @@ Imports hashlib or tinygpgs.hash lazily.
 import binascii
 import struct
 
-from tinygpgs.pyx import iteritems, buffer, binary_type, xrange, to_hex_str, is_buffer_slice, is_buffer_item_binary, is_buffer_join, ensure_binary, callable
+from tinygpgs.pyx import iteritems, buffer, binary_type, xrange, to_hex_str, is_buffer_slice, is_buffer_item_binary, is_buffer_join, ensure_binary, callable, is_python_function
 from tinygpgs.strxor import make_strxor, fast_strxor
 
 
@@ -425,15 +425,6 @@ def get_gpg_s2k_string_to_key(keytable_size, salt, count, digest_func, passphras
   session_key = b''.join(session_key)[:keytable_size]
   assert len(session_key) == keytable_size
   return session_key
-
-
-class _DummyClass(object):
-  def dummy():
-    pass
-
-
-def is_python_function(func, _types=(type(_DummyClass().dummy), type(lambda: 0))):
-  return type(func) in _types
 
 
 # --- GPG decryption.

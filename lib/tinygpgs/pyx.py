@@ -66,3 +66,9 @@ def check_binary(data):  # Not in six.
   if not isinstance(data, binary_type):
     raise TypeError
   return data
+class _DummyClass(object):
+  def dummy():
+    pass
+def is_python_function(func, _types=(type(_DummyClass().dummy), type(lambda: 0))):
+  return type(func) in _types
+del _DummyClass
