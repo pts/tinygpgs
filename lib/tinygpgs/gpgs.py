@@ -1040,7 +1040,12 @@ def get_decrypt_symmetric_gpg_literal_packet_reader(
     if mdc_obj:
       raise ValueError('MDC mismatch, message may have been tampered with.')
 
-  return iter_to_fread(yield_data_chunks(data1, data, encrypt_func, is_py_cipher, mdc_obj))
+  dparams = {
+      'cipher_algo': cipher_algo,
+      'cipher_algo_str': CIPHER_ALGOS_ALL[cipher_algo],
+      'has_mdc': has_mdc,
+  }
+  return iter_to_fread(yield_data_chunks(data1, data, encrypt_func, is_py_cipher, mdc_obj)), dparams
 
 
 LITERAL_TYPES = b'btul1'
@@ -1108,11 +1113,12 @@ def yield_gpg_literal_data_chunks(fread):
 
 
 def decrypt_symmetric_gpg(fread, of, *args, **kwargs):
-  fread = get_decrypt_symmetric_gpg_literal_packet_reader(fread, *args, **kwargs)
+  fread, dparams = get_decrypt_symmetric_gpg_literal_packet_reader(fread, *args, **kwargs)
   try:
     copy_gpg_literal_data(fread, of)
   finally:
     of.flush()  # Flush before raising MDC mismatch or something else.
+  return dparams
 
 
 # --- GPG encryption.

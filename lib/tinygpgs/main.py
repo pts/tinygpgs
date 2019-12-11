@@ -17,7 +17,6 @@ from tinygpgs.pyx import ensure_binary, integer_types, is_stdin_text
 # !! Add section about installing pycrypto (even on macOS) to README.txt,
 #    including --speed-test.
 # !! Add --version.
-# !! gpg -d: WARNING: message was not integrity protected
 # !! Add warning if slow because of Python hash or cipher.
 # !! Document encryptedfile and other Python modules.
 # !! Check proper error message in Python 2.3, 2.2, 2.1 and 2.0.
@@ -477,12 +476,15 @@ def main(argv, zip_file=None):
                 of.write(data)
           finally:
             f.close()
+          dparams = f.params
         else:
-          gpgs.decrypt_symmetric_gpg(inf.read, of, **decrypt_params)
+          dparams = gpgs.decrypt_symmetric_gpg(inf.read, of, **decrypt_params)
       except gpgs.BadPassphraseError as e:
         msg = str(e)
         sys.stderr.write('fatal: %s%s\n' % (msg[0].lower(), msg[1:].rstrip('.')))
         sys.exit(2)
+      if not dparams['has_mdc']:  # Same as gpg(1)'s output after the colon.
+        sys.stderr.write('warning: message was not integrity protected\n')
   finally:
     try:
       if of is not sys.stdout:

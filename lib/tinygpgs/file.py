@@ -39,7 +39,7 @@ class GpgSymmetricFileReader(object):
   instead of this object.
   """
 
-  __slots__ = ('read', '_f')
+  __slots__ = ('read', 'params', '_f')
 
   def __init__(self, filename, mode, *args, **kwargs):
     """Also pass passphrase=... You can pass .read method as filename."""
@@ -50,7 +50,7 @@ class GpgSymmetricFileReader(object):
     else:
       self._f = f = open(filename, 'rb')
       fread = f.read
-    fread = gpgs.get_decrypt_symmetric_gpg_literal_packet_reader(
+    fread, params = gpgs.get_decrypt_symmetric_gpg_literal_packet_reader(
         fread, *args, **kwargs)
     # TODO(pts): Add has_mdc, cipher_algo etc. and other parameters to self,
     # make them available for inspection. Also in *FileWriter.
@@ -61,7 +61,7 @@ class GpgSymmetricFileReader(object):
       break
     # TODO(pts): Flush before raising an exception (on e.g. MDC mismatch),
     # modify iter_to_fread_or_all.
-    self.read = gpgs.iter_to_fread_or_all(it)
+    self.read, self.params = gpgs.iter_to_fread_or_all(it), params
 
   def close(self):
     self.read = ()
