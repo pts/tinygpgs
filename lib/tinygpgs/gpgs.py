@@ -515,7 +515,7 @@ def yield_gpg_binary_packets(fread, c0=b''):
     if size:
       if packet_type in (9, 11, 18):
         if size > 8192:
-          remaining, is_partial = (size - 8192) & ~8191, True
+          remaining, is_partial = size & ~8191, True
           while remaining > 0:
             size2 = min(remaining, 8192)
             data = fread(size2)
@@ -524,7 +524,7 @@ def yield_gpg_binary_packets(fread, c0=b''):
             yield packet_type, is_partial, data
             remaining -= size2
             size -= size2
-        assert 0 < size <= 8192
+        assert 0 < size <= 8192, size
       elif size > 46:
         if not (packet_type in (1, 2) and size < 8192):
           # We could easily handle megabytes, but the output of `gpg
