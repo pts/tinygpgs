@@ -1502,7 +1502,7 @@ def get_cfb_encrypt_func(encrypt_func, bs, fr):  # fr is IV.
     raise ValueError('CFB fr must be %d bytes, got: %d' % bs, len(fr))
   strxor_bs = make_strxor(bs)
   fr_ary = [fr]
-  do_binary = is_buffer_slice and is_buffer_item_binary
+  do_binary = is_buffer_slice
 
   def cfb_encrypt(data):
     ld = len(data)
