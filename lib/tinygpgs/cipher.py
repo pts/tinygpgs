@@ -195,7 +195,7 @@ class AES(object):
   def encrypt(self, plaintext):
     Ke, S, T1, T2, T3, T4 = self.Ke, self.S, self.T1, self.T2, self.T3, self.T4
     if len(plaintext) != 16:
-      raise ValueError('Wrong block length, expected 16, got: %d' + len(plaintext))
+      raise ValueError('Wrong block length, expected 16, got: %d' % len(plaintext))
     ROUNDS = len(Ke) - 1
     t = struct.unpack('>LLLL', plaintext)
     Ker = Ke[0]
@@ -209,7 +209,7 @@ class AES(object):
   def decrypt(self, ciphertext):
     Kd, Si, T5, T6, T7, T8 = self.Kd, self.Si, self.T5, self.T6, self.T7, self.T8
     if len(ciphertext) != 16:
-      raise ValueError('Wrong block length, expected 16, got: %d' + len(plaintext))
+      raise ValueError('Wrong block length, expected 16, got: %d' % len(plaintext))
     ROUNDS = len(Kd) - 1
     t = struct.unpack('>LLLL', ciphertext)
     Kdr = Kd[0]
