@@ -13,6 +13,13 @@ if type(zip()) is not list:  # Python 3.
       return data
     else:
       raise TypeError
+  def ensure_str(data):
+    if isinstance(data, str):
+      return data
+    elif isinstance(data, bytes):
+      return str(data, 'utf-8')
+    else:
+      raise TypeError
   def iteritems(d):
     return d.items()
   def buffer(a, _b=None, _c=None):
@@ -48,6 +55,13 @@ else:  # Python 2.
       return data
     else:
       raise TypeError
+  def ensure_str(data):
+    if isinstance(data, unicode):
+      return data.decode('utf-8')
+    elif isinstance(data, str):
+      return data
+    else:
+      raise TypeError
   def iteritems(d):
     return d.iteritems()
   def to_hex_str(data):  # Not in six.
@@ -72,3 +86,9 @@ class _DummyClass(object):
 def is_python_function(func, _types=(type(_DummyClass().dummy), type(lambda: 0))):
   return type(func) in _types
 del _DummyClass
+if callable(getattr(int, 'from_bytes', None)):
+  def int_from_bytes_be(v, _from_bytes=int.from_bytes):  # Python 3.1. Not in six.
+    return _from_bytes(v, 'big')
+else:
+  def int_from_bytes_be(data, _hexlify=__import__('binascii').hexlify):  # Not in six.
+    return int(_hexlify(data), 16)

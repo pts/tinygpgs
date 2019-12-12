@@ -241,6 +241,7 @@ def main(argv, zip_file=None):
   params['passphrase'] = ()
   params['show_info_func'] = show_info
   encrypt_params = {}
+  encrypt_params['recipients'] = []
   decrypt_params = {}
   flags_with_arg = (
       '--pinentry-mode', '--passphrase', '--passphrase-fd', '--passphrase-file',
@@ -289,7 +290,7 @@ def main(argv, zip_file=None):
         '--change-passphrase', '--passwd', '--sign-key',
         '--lsign-key', '--quick-sign-key', '--quick-lsign-key',
         '--trusted-key', '--trust-model', '--recipient', '-r',
-        '--recipient-file', '-f', '--hidden-recipient', '-R',
+        '--hidden-recipient', '-R',
         '--hidden-recipient-file', '-F', '--encrypt-to', '--hidden-encrypt-to',
         '--no-encrypt-to', '--sender', '--primary-keyring',
         ):  # gpg(1).
@@ -396,6 +397,15 @@ def main(argv, zip_file=None):
     elif do_encrypt and arg == '--mtime':
       encrypt_params['mtime'] = get_flag_arg_int(argv, i)
       i += 1
+    elif do_encrypt and arg in ('--recipient-file', '-f'):  # gpg(1) 2.
+      from tinygpgs import gpgs
+      filename = get_flag_arg(argv, i)
+      i += 1
+      f = open(filename, 'rb')
+      try:
+        encrypt_params['recipients'].append(gpgs.load_pk_encryption_key(f.read))
+      finally:
+        f.close()
     else:
       raise SystemExit('usage: unknown flag: ' + arg)
   if i < len(argv) and input_file is None:  # gpg(1).

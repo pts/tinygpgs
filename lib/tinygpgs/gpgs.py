@@ -10,7 +10,7 @@ Imports hashlib or tinygpgs.hash lazily.
 import binascii
 import struct
 
-from tinygpgs.pyx import iteritems, buffer, binary_type, xrange, to_hex_str, is_buffer_slice, is_buffer_item_binary, is_buffer_join, ensure_binary, callable, is_python_function
+from tinygpgs.pyx import iteritems, buffer, binary_type, xrange, to_hex_str, is_buffer_slice, is_buffer_item_binary, is_buffer_join, ensure_binary, callable, is_python_function, ensure_str, int_from_bytes_be
 from tinygpgs.strxor import make_strxor, fast_strxor
 
 
@@ -517,7 +517,7 @@ def yield_gpg_binary_packets(fread, c0=b''):
             size -= size2
         assert 0 < size <= 8192, size
       elif size > 46:
-        if not (packet_type in (1, 2) and size < 8192):
+        if not (packet_type in (1, 2, 5, 6, 7, 13, 14, 17) and size < 8192):
           # We could easily handle megabytes, but the output of `gpg
           # --symmetric' just doesn't have such packets.
           raise ValueError('Packet size unusually large: type %d, size %d' %
@@ -529,7 +529,7 @@ def yield_gpg_binary_packets(fread, c0=b''):
       yield packet_type, is_partial, data
 
 
-def get_gpg_ascii_armor_fread(fread):
+def get_gpg_ascii_armor_fread(fread, armor_type):
   import binascii  # For base64.
 
   def yield_data_chunks(_a2b=binascii.a2b_base64, _crc24=crc24, _buffer=buffer):
@@ -571,9 +571,10 @@ def get_gpg_ascii_armor_fread(fread):
           bdata, buf = _a2b(_buffer(buf, 0, t)), buf[t:]
           crc = _crc24(bdata, crc)
           yield bdata
-      if len(data) < 26:
-        data += fread(26 - len(data))
-      if not (data.startswith(b'-----END PGP MESSAGE-----') and data[25 : 26] in b'\r\n'):
+      expected_end = b''.join((b'-----END PGP ', armor_type, b'-----'))
+      if len(data) < len(expected_end):
+        data += fread(len(expected_end) - len(data))
+      if not (data.startswith(expected_end) and fread(1) in b'\r\n'):
         raise ValueError('Bad end of GPG ASCII armor.')
       t = buf.rfind(b'=')
       if t <= 0:
@@ -602,7 +603,7 @@ def get_gpg_ascii_armor_fread(fread):
   return iter_to_fread(yield_data_chunks())
 
 
-def yield_gpg_packets(fread, has_ascii_armor_ary=None):
+def yield_gpg_packets(fread, has_ascii_armor_ary=None, armor_types=(b'MESSAGE',), allowed_first_packet_types=(1, 3)):
   c = fread(1)
   if not isinstance(c, binary_type):
     raise ValueError('Please open the GPG input file in binary mode.')
@@ -613,12 +614,25 @@ def yield_gpg_packets(fread, has_ascii_armor_ary=None):
       break
     c = fread(1)
   if c[:1] == b'-':
-    data = fread(27)
-    if not (len(data) == 27 and data.startswith(b'-----BEGIN PGP MESSAGE-----'[1:]) and data[26 : 27] in b'\r\n'):
+    data = fread(14)
+    armor_type = ''
+    if data == b'----BEGIN PGP ':  # 1 more '-' was already matched in the beginning.
+      data = []
+      while 1:
+        c = fread(1)
+        if not (c.isalpha() or c == b' '):
+          break
+        data.append(c)
+      if c == b'-' and fread(4) == b'----' and fread(1) in b'\r\n':
+        armor_type = b''.join(data)
+    if not armor_type:
       raise ValueError('GPG ASCII armor expected.')
+    if armor_type not in armor_types:
+      raise ValueError('GPG ASCII armor of the wrong type found, expected %r, got: %r' %
+                       (tuple(map(ensure_str, armor_types)), ensure_str(armor_type)))
     if has_ascii_armor_ary is not None:
       has_ascii_armor_ary.append(True)
-    fread = get_gpg_ascii_armor_fread(fread)
+    fread = get_gpg_ascii_armor_fread(fread, armor_type)
     c = fread(1)
     if not c:
       raise ValueError('Empty GPG ASCII armor data.')
@@ -629,7 +643,7 @@ def yield_gpg_packets(fread, has_ascii_armor_ary=None):
     packet_type = (b & 63) >> ((~b >> 5) & 2)
   # packet_type == 1 (PKESK).
   # packet_type == 3 (SKESK), c in b'\x8c\x8d\x8e\xc3'.
-  if packet_type not in (1, 3):
+  if packet_type not in allowed_first_packet_types:
     if packet_type < 0:
       raise ValueError('Bad GPG data, packet expected.')
     if not 1 <= packet_type <= 19:
@@ -1136,12 +1150,26 @@ def get_random_bytes_default(size, _functions=[]):
   return _functions[0](size)
 
 
-def get_short_gpg_packet(packet_type, data):
-  if len(data) > 191:
-    raise ValueError('Short GPG packet must be at most 191 bytes, got: %d' % len(data))
+def get_gpg_packet_header(packet_type, size, _pack=struct.pack):
   if not 1 <= packet_type <= 63:
     raise ValueError('Invalid GPG packet type: %d' % packet_type)
-  return struct.pack('>BB', 192 | packet_type, len(data)) + data
+  if size < 0:
+    raise ValueError('To-be-created GPG packet has negative size.')
+  elif size < 192:
+    return _pack('>BB', 192 | packet_type, size)
+  elif size < 256 and packet_type < 16:
+    return _pack('>BB', 128 | (packet_type << 2), size)
+  elif size < 65536 and packet_type < 16:
+    return _pack('>BH', 129 | (packet_type << 2), size)
+  elif size < 8192 + 192:
+    b = size - 192
+    return _pack('>BBB', 192 | packet_type, 192 | b >> 8, b & 255)
+  elif size >> 32:
+    raise ValueError('To-be-created GPG packet too large.')
+  elif packet_type < 16:
+    return _pack('>BL', 130 | (packet_type << 2), size)
+  else:
+    return _pack('>BBL', 192 | packet_type, 255, size)
 
 
 def yield_partial_gpg_packet_chunks(packet_type, data, fread, buflog2cap, _pack=struct.pack):
@@ -1156,15 +1184,7 @@ def yield_partial_gpg_packet_chunks(packet_type, data, fread, buflog2cap, _pack=
     raise ValueError('Initial partial data too long.')
   data += fread(bufsize - len(data))
   if len(data) < bufsize:
-    if len(data) < 192:
-      yield _pack('>BB', 192 | packet_type, len(data))
-    elif len(data) < 8192 + 192:
-      b = len(data) - 192
-      yield _pack('>BBB', 192 | packet_type, 192 | b >> 8, b & 255)
-    elif packet_type < 16:
-      yield _pack('>BL', 130 | (packet_type << 2), len(data))
-    else:
-      yield _pack('>BBL', 192 | packet_type, 255, len(data))
+    yield get_gpg_packet_header(packet_type, len(data))
     yield data
   else:
     cont_size_spec = _pack('>B', 224 | buflog2cap)
@@ -1233,7 +1253,7 @@ def get_encrypt_symmetric_gpg_params(
     passphrase,  # This is the first argument, order of others can change.
     is_slow_cipher=False, is_slow_hash=False, cipher='cast5', s2k_digest='sha1', compress='zip', compress_level=6, s2k_mode=3, s2k_count=65536, salt=None,
     do_mdc=True,  # No fixed default in gpg(1), let's play it safe with True.
-    buflog2cap=13, plain_filename=b'', mtime=0, literal_type=b'b', do_add_ascii_armor=False, show_info_func=None, do_show_session_key=False, iv=None):
+    buflog2cap=13, plain_filename=b'', mtime=0, literal_type=b'b', do_add_ascii_armor=False, show_info_func=None, do_show_session_key=False, iv=None, recipients=None):
   plain_filename, literal_type = ensure_binary(plain_filename), ensure_binary(literal_type)
   if not show_info_func:
     show_info_func = lambda msg: 0
@@ -1333,20 +1353,39 @@ def get_encrypt_symmetric_gpg_params(
   if not literal_type or literal_type not in LITERAL_TYPES:
     raise ValueError('Bad literal type: %r' % literal_type)
   if callable(passphrase):
-    passphrase = passphrase()
-  passphrase = ensure_binary(passphrase)
-  session_key = get_gpg_s2k_string_to_key(keytable_size, salt, count, digest_func, passphrase)  # Slow.
+    if recipients:
+      passphrase = None
+    else:
+      passphrase = passphrase()
+  if passphrase is None:
+    if not recipients:
+      raise ValueError('Missing passphrase and recipients.')
+    session_key = get_random_bytes_default(keytable_size)
+    header = b''
+  else:
+    passphrase = ensure_binary(passphrase)
+    session_key = get_gpg_s2k_string_to_key(keytable_size, salt, count, digest_func, passphrase)  # Slow.
+    header = _pack('>BBBB%dsB' % len(salt), 4, cipher_algo, s2k_mode, digest_algo, salt, bestb)
+    if len(header) > 191:  # Never happens.
+      raise ValueError('SKESK packet too long.')
   if do_show_session_key and show_info_func:
     show_info_func('GPG symmetric encrypt session_key=%r' % ':'.join((str(cipher_algo), to_hex_str(session_key).upper())))
+  headers = []
+  for d in recipients:
+    headers.append(None)
+    headers.append(_pack('>B8sB', 3, ensure_binary(binascii.unhexlify(d['key_id'])), d['pk_algo']))
+    headers.append(pk_encrypt_session_key(d, cipher_algo, session_key))
+    headers[-3] = get_gpg_packet_header(1, len(headers[-2]) + len(headers[-1]))
+  if header:
+    headers.append(get_gpg_packet_header(3, len(header)))
+    headers.append(header)
+  header = b''.join(headers)
+  del headers
   encrypt_func, _, bs = get_gpg_encrypt_func(cipher_algo, session_key, is_slow_cipher)
   try:
     cfb_encrypt, _, _ = get_gpg_encrypt_func(cipher_algo, session_key, is_slow_cipher, b'\0' * bs)
   except (BadCfbCipher, ImportError):
     cfb_encrypt = None
-  header = _pack('>BBBB%dsB' % len(salt), 4, cipher_algo, s2k_mode, digest_algo, salt, bestb)
-  if len(header) > 191:
-    raise ValueError('SKESK packet too long.')
-  header = struct.pack('>BB', 192 | 3, len(header)) + header
   if do_mdc:
     first_plaintext_chunk = plaintext_salt + plaintext_salt[-2:]
     mdc_obj = new_hash('sha1', b'', is_slow_hash)
@@ -1562,3 +1601,165 @@ def parse_override_session_key(override_session_key):
   if keytable_size != len(keytable):
     raise ValueError('Expected keytable of %d bytes, got: %d' % (keytable_size, len(keytable)))
   return cipher_algo, keytable
+
+
+def parse_mpis(count, data, i):
+  """Parses and returns count GPG multiprecision integers."""
+  result = []
+  while count > 0:
+    count -= 1
+    if i + 2 > len(data):
+      raise ValueError('MPI too short.')
+    bitsize, = struct.unpack('>H', data[i : i + 2])
+    i += 2
+    size = (bitsize + 7) >> 3
+    if i + size > len(data):
+      raise ValueError('MPI data too short.')
+    result.append((bitsize, data[i : i + size]))
+    i += size
+  return result, i
+
+
+def build_mpi(i, bit_size):
+  """bit_size is just an upper bound for the number of bits in i."""
+  if i < 0:
+    raise ValueError('MPI must be nonnegative.')
+  if i >> bit_size:
+    raise ValueError('MPI too long.')
+  if i == 0:
+    return b'\0\0'  # TODO(pts): Should this be b'\0\1\0' instead?
+  size = (bit_size + 7) >> 3
+  if callable(getattr(i, 'to_bytes', None)):
+    data = i.to_bytes('big')
+    data = b'\0' * (size - len(data)) + data
+  else:
+    data = ensure_binary(binascii.unhexlify(ensure_binary('%%0%dx' % (size << 1) % i)))
+  assert len(data) == size
+  i, zero = 0, b'\0'[0]
+  while data[i] == zero:
+    i += 1
+  data = data[i:]
+  b = ord(data[:1])
+  i = 1
+  while b >> i:
+    i += 1
+  return struct.pack('>H', (len(data) << 3) + (i - 8)) + data
+
+
+def pk_encrypt_session_key(pk_encryption_key, cipher_algo, session_key):
+  d = pk_encryption_key
+  pk_algo = d['pk_algo']
+  if pk_algo == 1:  # RSA.
+    n = d['n']
+  elif pk_algo == 16:  # Elgamal.
+    n = d['p']
+  else:
+    ValueError('Unknown PKESK pk_algo: %r' % (pk_algo,))
+  bit_size = n[0]
+  size = bit_size >> 3
+  random_size = size - 5 - len(session_key)
+  if random_size < 0:
+    ValueError('Session key too long.')
+  random_data = b''
+  while len(random_data) < random_size:
+    random_data += get_random_bytes_default(random_size - len(random_data)).replace(b'\0', b'')
+  if b'\0'[0]:  # Python 2, iterating over str yields 1-char strs.
+    checksum = sum(ord(b) for b in session_key)
+  else:
+    checksum = sum(b for b in session_key)
+  data = struct.pack('>B%dsxB%dsH' % (len(random_data), len(session_key)), 2, random_data, cipher_algo, session_key, checksum)
+  assert len(data) == size
+  m = int_from_bytes_be(data)
+  del data
+  if pk_algo == 1:  # RSA.
+    n, e = int_from_bytes_be(n[1]), int_from_bytes_be(d['e'][1])
+    return build_mpi(pow(m, e, n), bit_size)
+  elif pk_algo == 16:  # Elgamal.
+    p, g, y = int_from_bytes_be(n[1]), int_from_bytes_be(d['g'][1]), int_from_bytes_be(d['y'][1])
+    p1, k = p - 1, 0
+    while not 0 < k < p1:  # Generate a random k: 1 <= k <= p - 2.
+      rlong = get_random_bytes_default(bit_size >> 3)
+      if bit_size & 7:
+        rlong = struct.pack('B', ord(get_random_bytes_default(1)) & ((1 << (bit_size & 7)) - 1)) + rlong
+      k = int_from_bytes_be(rlong)
+    # This is noticeaby slower than RSA, because for RSA the exponent e is
+    # typically small (0x10001).
+    return build_mpi(pow(g, k, p), bit_size) + build_mpi(m * pow(y, k, p) % p, bit_size)
+  else:
+    assert 0, 'Impossible pk_algo.'
+
+
+def load_all_pk_encryption_keys(fread):
+  # This can load output of `gpg --export' and `gpg --export-secret-key'
+  # (with our without --armor), and also ~/.gnupg/pubring.gpg.
+  # packet_types for PUBLIC KEY BLOCK: 6, 13, 2, 14, 2.
+  # packet_types for PRIVATE KEY BLOCK: 5, 13, 2, 7, 2.
+  pk_encryption_keys = []
+  d = {}
+  for packet_type, is_partial, data in yield_gpg_packets(
+      fread, armor_types=(b'PUBLIC KEY BLOCK', b'PRIVATE KEY BLOCK'), allowed_first_packet_types=(6, 5)):
+    if is_partial:
+      raise ValueError('Unexpected partial packet.')
+    if packet_type in (5, 6):
+      if d:
+        encryption_keys.append(d)
+      d = {}
+    if packet_type == 13:
+      # Example user ID: 'Real Name 2 (Comment 2) <testemail2@email.com>'
+      d['user_id'] = ensure_str(data)
+    if packet_type in (14, 7) and 'version' not in d:
+      b = ord(data[:1] or b'\0')
+      if len(data) >= 10 and b == 3:
+        pk_algo, i = ord(data[7 : 8]), 8
+      elif len(data) >= 8 and b == 4:
+        pk_algo, i = ord(data[5 : 6]), 6
+      elif b > 4:
+        pk_algo = i = 0
+      else:
+        raise ValueError('Key too short.')
+      if i and pk_algo in (1, 16):
+        d['version'], d['pk_algo'] = b, pk_algo
+        d['key_id'] = None
+        if d['pk_algo'] == 1:
+          d['pk_algo_str'] = 'RSA'
+          (d['n'], d['e']), j = parse_mpis(2, data, i)
+          if d['n'][0] < 64:
+            raise ValueError('RSA key too short.')
+          if b == 3:
+            d['key_id'] = ensure_str(binascii.hexlify(struct.pack('>Q', d['n'][1][-8:])).upper())
+        elif d['pk_algo'] == 16:
+          d['pk_algo_str'] = 'Elgamal'
+          (d['p'], d['g'], d['y']), j = parse_mpis(3, data, i)
+        else:
+          j = 0
+        if j and not d['key_id']:
+          fp_obj = new_hash('sha1', struct.pack('>BH', 0x99, j))
+          fp_obj.update(data[:j])
+          d['key_id'] = fp_obj.hexdigest()[-16:].upper()
+        # TODO(pts): Also extract the cipher_algo preferences of the
+        # recipient, to prevent gpg warning.
+      elif 'key_id' not in d:
+        d['version'] = b
+        if pk_algo:
+          d['pk_algo'] = pk_algo
+  if d:
+    pk_encryption_keys.append(d)
+  return pk_encryption_keys
+
+
+def load_pk_encryption_key(fread):
+  pk_encryption_keys, bad_count = [], 0
+  #fread = open('/home/pts/.gnupg/pubring.gpg', 'rb').read
+  for d in load_all_pk_encryption_keys(fread):
+    if d['key_id']:
+      if pk_encryption_keys:
+        raise ValueError('Multiple public-key encryption keys found.')
+      pk_encryption_keys.append(d)
+    else:
+      bad_count += 1
+  if not pk_encryption_keys:
+    if bad_count:
+      raise ValueError('Public-key encryption keys not recognized.')
+    else:
+      raise ValueError('Public-key encryption keys missing.')
+  return pk_encryption_keys[0]
