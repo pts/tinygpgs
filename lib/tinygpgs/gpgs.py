@@ -1632,6 +1632,9 @@ def parse_override_session_key(override_session_key):
   return cipher_algo, keytable
 
 
+# --- Public-key cryptography.
+
+
 def parse_mpis(count, data, i):
   """Parses and returns count GPG multiprecision integers."""
   result = []
@@ -1649,6 +1652,16 @@ def parse_mpis(count, data, i):
   return result, i
 
 
+def int_to_bytes_be(i, size):
+  if callable(getattr(i, 'to_bytes', None)):  # Python >=3.2.
+    data = i.to_bytes(size, 'big')
+  else:
+    data = ensure_binary(binascii.unhexlify(ensure_binary('%%0%dx' % (size << 1) % i)))
+  if len(data) != size:
+    raise ValueError('Integer does not fit to %d bytes.' % size)
+  return data
+
+
 def build_mpi(i, bit_size):
   """bit_size is just an upper bound for the number of bits in i."""
   if i < 0:
@@ -1658,12 +1671,7 @@ def build_mpi(i, bit_size):
   if i == 0:
     return b'\0\0'  # TODO(pts): Should this be b'\0\1\0' instead?
   size = (bit_size + 7) >> 3
-  if callable(getattr(i, 'to_bytes', None)):
-    data = i.to_bytes('big')
-    data = b'\0' * (size - len(data)) + data
-  else:
-    data = ensure_binary(binascii.unhexlify(ensure_binary('%%0%dx' % (size << 1) % i)))
-  assert len(data) == size
+  data = int_to_bytes_be(i, size)
   i, zero = 0, b'\0'[0]
   while data[i] == zero:
     i += 1
@@ -1683,7 +1691,7 @@ def pk_encrypt_session_key(pk_encryption_key, cipher_algo, session_key):
   elif pk_algo == 16:  # Elgamal.
     n = d['p']
   else:
-    ValueError('Unknown PKESK pk_algo: %r' % (pk_algo,))
+    raise ValueError('Unknown PKESK pk_algo: %r' % (pk_algo,))
   bit_size = n[0]
   size = bit_size >> 3
   random_size = size - 5 - len(session_key)
@@ -1792,15 +1800,16 @@ def load_all_pk_encryption_keys(fread):
       b = ord(data[:1] or b'\0')
       if len(data) >= 10 and b == 3:
         pk_algo, i = ord(data[7 : 8]), 8
+        d['pk_algo'] = pk_algo
       elif len(data) >= 8 and b == 4:
         pk_algo, i = ord(data[5 : 6]), 6
+        d['pk_algo'] = pk_algo
       elif b > 4:
         pk_algo = i = 0
       else:
         raise ValueError('Key too short.')
-      if i and pk_algo in (1, 16):
-        d['version'], d['pk_algo'] = b, pk_algo
-        d['key_id'] = None
+      d['version'], d['key_id'], j = b, None, 0
+      if i:
         if d['pk_algo'] == 1:
           d['pk_algo_str'] = 'RSA'
           (d['n'], d['e']), j = parse_mpis(2, data, i)
@@ -1811,18 +1820,12 @@ def load_all_pk_encryption_keys(fread):
         elif d['pk_algo'] == 16:
           d['pk_algo_str'] = 'Elgamal'
           (d['p'], d['g'], d['y']), j = parse_mpis(3, data, i)
-        else:
-          j = 0
         if j and not d['key_id']:
           fp_obj = new_hash('sha1', struct.pack('>BH', 0x99, j))
           fp_obj.update(data[:j])
           d['key_id'] = fp_obj.hexdigest()[-16:].upper()
-        # TODO(pts): Also extract the cipher_algo preferences of the
-        # recipient, to prevent gpg warning.
-      elif 'key_id' not in d:
-        d['version'] = b
-        if pk_algo:
-          d['pk_algo'] = pk_algo
+      if not d['key_id']:
+        d.pop('key_id', None)
   if d:
     pk_encryption_keys.append(d)
   return pk_encryption_keys
@@ -1832,7 +1835,7 @@ def load_pk_encryption_key(fread):
   pk_encryption_keys, bad_count = [], 0
   #fread = open('/home/pts/.gnupg/pubring.gpg', 'rb').read
   for d in load_all_pk_encryption_keys(fread):
-    if d['key_id']:
+    if d.get('key_id'):
       if pk_encryption_keys:
         raise ValueError('Multiple public-key encryption keys found.')
       pk_encryption_keys.append(d)

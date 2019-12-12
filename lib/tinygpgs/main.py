@@ -7,6 +7,7 @@ from tinygpgs.pyx import ensure_binary, integer_types, is_stdin_text, is_python_
 # Here we don't import anything from tinygpgs, to make --help and flag
 # parsing fast. We do lazy imports later as needed.
 
+# !! Accept -e flag instead of -c if recipients are present.
 # !! Add --speed-test with dependency checks on Crypto.Cipher._AES.
 # !! Add --install-pycrypto, make it work as root and non-root, make it
 #    download pip first if needed, make it remind the user about
@@ -25,6 +26,7 @@ from tinygpgs.pyx import ensure_binary, integer_types, is_stdin_text, is_python_
 # !! Make mksingle.py generic, independent of tinygpgs.
 # !! doc: py3 syntax conversion: print statement
 # !! doc: py3 syntax conversion: octal literals: 0123 is SyntaxError, but 0123e6 is OK.
+# !! doc: py3 conversion: ord(data[:1]) instead of ord(data[0])
 # !! doc: py3 conversion: basic level: just display an error message on Python 3, octal still has to be converted
 # !! doc: py3 conversion: b'%d' % 42 doesn't work in Python 3.4.
 # !! doc: py3 conversion: how to detect Python 3: if type(zip()) is not list:  # Python 3.
