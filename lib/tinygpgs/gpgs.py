@@ -1652,11 +1652,21 @@ def parse_mpis(count, data, i):
   return result, i
 
 
+def parse_pstring(data, i):
+  """Parses and returns a Pascal string."""
+  if i >= len(data):
+    raise ValueError('pstring too short.')
+  size = ord(data[i : i + 1])
+  i += 1
+  if i + size > len(data):
+    raise ValueError('pstring data too short.')
+  return data[i : i + size], i + size
+
+
 def int_to_bytes_be(i, size):
   if callable(getattr(i, 'to_bytes', None)):  # Python >=3.2.
-    data = i.to_bytes(size, 'big')
-  else:
-    data = ensure_binary(binascii.unhexlify(ensure_binary('%%0%dx' % (size << 1) % i)))
+    return i.to_bytes(size, 'big')  # Can raise OverflowError.
+  data = ensure_binary(binascii.unhexlify(ensure_binary('%%0%dx' % (size << 1) % i)))
   if len(data) != size:
     raise ValueError('Integer does not fit to %d bytes.' % size)
   return data
@@ -1683,13 +1693,169 @@ def build_mpi(i, bit_size):
   return struct.pack('>H', (len(data) << 3) + (i - 8)) + data
 
 
+def curve25519_donna_scalarmult(n, p=None):
+  """Performs scalarmult on the CV25519 elliptic curve.
+
+  Args:
+    n: An integer (scalar of an EC point) represented as a string (32 bytes, little endian).
+    p: A group element (point on the EC), prepresented as a string (32 bytes, little endian).
+  """
+  if len(n) != 32:
+    raise ValueError('Invalid Curve25519 n.')
+  if p is None:
+    u = 9
+  else:
+    if len(p) != 32:
+      raise ValueError('Invalid Curve25519 p.')
+    u = int_from_bytes_be(p[::-1])
+  k = (int_from_bytes_be(n[::-1]) & ~(1 << 255 | 7)) | 1 << 254
+  ql, x1, x2, z2, x3, z3, do_swap = 2 ** 255 - 19, u, 1, 0, u, 1, 0
+  for t in xrange(254, -1, -1):
+    kt = (k >> t) & 1
+    if do_swap ^ kt:
+      x2, x3, z2, z3 = x3, x2, z3, z2
+    do_swap = kt
+    a, b = (x2 + z2) % ql, (x2 - z2) % ql
+    aa, bb = (a * a) % ql, (b * b) % ql
+    c, d = (x3 + z3) % ql, (x3 - z3) % ql
+    da, cb = d * a % ql, c * b % ql
+    d1, d2 = da + cb, da - cb
+    x3, z3 = d1 * d1 % ql, x1 * d2 * d2 % ql
+    x2, e = aa * bb % ql, (aa - bb) % ql
+    z2 = e * (aa + 121665 * e) % ql
+  if do_swap:
+    x2, x3, z2, z3 = x3, x2, z3, z2
+  return int_to_bytes_be((x2 * pow(z2, ql - 2, ql)) % ql, 32)[::-1]
+# !!! Add unit test.
+
+
+def curve25519_donna_scalarmult_int(n, p=9):
+  """Performs scalarmult on the CV25519 elliptic curve.
+
+  Args:
+    n: An integer (scalar of an EC point).
+    p: An integer containing the x coordinate of a group element (point on the EC).
+  """
+  k = (n & ~(1 << 255 | 7)) | 1 << 254
+  ql, x1, x2, z2, x3, z3, do_swap = 2 ** 255 - 19, p, 1, 0, p, 1, 0
+  for t in xrange(254, -1, -1):
+    kt = (k >> t) & 1
+    if do_swap ^ kt:
+      x2, x3, z2, z3 = x3, x2, z3, z2
+    do_swap = kt
+    a, b = (x2 + z2) % ql, (x2 - z2) % ql
+    aa, bb = (a * a) % ql, (b * b) % ql
+    c, d = (x3 + z3) % ql, (x3 - z3) % ql
+    da, cb = d * a % ql, c * b % ql
+    d1, d2 = da + cb, da - cb
+    x3, z3 = d1 * d1 % ql, x1 * d2 * d2 % ql
+    x2, e = aa * bb % ql, (aa - bb) % ql
+    z2 = e * (aa + 121665 * e) % ql
+  if do_swap:
+    x2, x3, z2, z3 = x3, x2, z3, z2
+  return (x2 * pow(z2, ql - 2, ql)) % ql
+# !!! Add unit test.
+
+
+def check():
+  scalarmult = curve25519_donna_scalarmult
+
+  # Test vector is from tinyssh source code:
+  # crypto-tests/crypto_scalarmult_curve25519test.c
+  basepoint = '0900000000000000000000000000000000000000000000000000000000000000'.decode('hex')
+  d = '562c1eb5fdb28129bd37495835d4b1307ddb573880121742f713f1056769d5bf'.decode('hex')
+  r = 'f9c3dac2104c80b252d0aeec377afd5d1ef2c8c348c29e12ddb2d0c8b198ff7f'.decode('hex')
+
+  # The order matters, scalarmult is not commutative.
+  assert scalarmult(d, basepoint) == r
+  assert scalarmult(d) == r
+
+  # Diffie--Hellman key exchange.
+  ask, bsk = '\xab' + '\xcd' * 31, '\x12' + '\x34' * 31
+  apk, bpk = scalarmult(ask), scalarmult(bsk)
+  assert apk != bpk
+  assert scalarmult(ask, bpk) == scalarmult(bsk, apk)
+  assert scalarmult(ask, bpk) != scalarmult(bsk, '\00' + apk[1:])
+  assert len(scalarmult(ask, bpk)) == 32
+
+  import sys; sys.stderr.write('check OK.\n')
+
+#!!!check()
+
+
+# It starts with the size (10 bytes after the first byte).
+# CV25519 curve OID (1.3.6.1.4.1.3029.1.5.1).
+CV25519_OID = b'\x0a\x2b\x06\x01\x04\x01\x97\x55\x01\x05\x01'
+
+
+def aes_key_wrap(keytable, data, _pack=struct.pack, _unpack=struct.unpack):
+  # https://tools.ietf.org/html/rfc3394
+  if len(data) & 7:
+    raise ValueError('Input data size of aes_key_wrap must be divisible by 8, got: %d' % len(data))
+  #r = (0,) + struct.unpack('>%dQ' % (len(data) >> 3), data)
+  r, n = [None], len(data) >> 3
+  n1 = n + 1
+  for i in xrange(1, n1):
+    r.append(data[(i << 3) - 8 : (i << 3)])
+  a = b'\xa6' * 8  # IV.
+  encrypt_func = get_cipher_cons('aes-256', False, 0)[0](keytable).encrypt  # !!! respect is_slow_cipher; also respect is_slow_hash elsewhere for public-key crypto.
+  for j in xrange(6):
+    for i in xrange(1, n1):
+      b = encrypt_func(a + r[i])
+      a, r[i] = _pack('>Q', _unpack('>Q', b[:8])[0] ^ (n * j + i)), b[8:]
+  r[0] = a
+  return b''.join(r)
+
+
+# !!! Add unit test.
+#assert binascii.hexlify(aes_key_wrap(binascii.unhexlify(b'000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F'), binascii.unhexlify(b'00112233445566778899AABBCCDDEEFF'))) == b'64e8c3f9ce0f5ba263e9777905818a2a93c8191e7d6e8ae7'
+
+
+# !! Move this function and others to newly-created pubkey.py.
 def pk_encrypt_session_key(pk_encryption_key, cipher_algo, session_key):
   d = pk_encryption_key
   pk_algo = d['pk_algo']
+  if b'\0'[0]:  # Python 2, iterating over str yields 1-char strs.
+    checksum = sum(ord(b) for b in session_key)
+  else:
+    checksum = sum(b for b in session_key)
   if pk_algo == 1:  # RSA.
     n = d['n']
   elif pk_algo == 16:  # Elgamal.
     n = d['p']
+  elif pk_algo == 18:  # ECDH CV25519.
+    # https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-08#section-13.5
+    #!!!assert curve25519_donna_scalarmult(binascii.unhexlify(b'58C323CAB0154BDBB024CE9CF36B9ADD6A3FBA26059779787951CE97F3AC3D68')[::-1]) == d['pk']  # !!! Why [::-1] reversed?
+    v = int_from_bytes_be(get_random_bytes_default(32))
+    v_pk = int_to_bytes_be(curve25519_donna_scalarmult_int(v), 32)[::-1]
+    s = int_to_bytes_be(curve25519_donna_scalarmult_int(v, int_from_bytes_be(d['pk'][::-1])), 32)[::-1]
+    del v
+    # m = symm_alg_ID || session_key || checksum || pkcs5_padding;
+    data = struct.pack('>B%dsH' % len(session_key), cipher_algo, session_key, checksum)
+    if len(data) < 40:  # Obfuscate len(session_key).
+      padding_size = 40 - len(data)
+    else:
+      padding_size = 8 - (len(data) & 7)
+    data += struct.pack('>B', padding_size) * padding_size  # PKCS#5.
+    # curve_OID_len = (byte)len(curve_OID);
+    # Param = curve_OID_len || curve_OID || public_key_alg_ID || 03 || 01 || KDF_hash_ID || KEK_alg_ID for AESKeyWrap || "Anonymous Sender    " || recipient_fingerprint;
+    pk_algo_id = 18  # ECDH.
+    kdf_digest_algo, kek_cipher_algo = struct.unpack('>BB', d['kdfp'][:2])
+    kdf_hash = DIGEST_ALGOS[kdf_digest_algo]  # KeyError if unknown.
+    if kek_cipher_algo not in (7, 8, 9):
+      raise ValueError('Expected AES cipher for KEK, got: %s' % CIPHER_ALGOS.get(kek_cipher_algo, kek_cipher_algo))
+    keytable_size = KEYTABLE_SIZES[kek_cipher_algo]
+    assert len(d['key_id_long']) == 20
+    param = b''.join((CV25519_OID, struct.pack('>BBBBB', pk_algo_id, 3, 1, kdf_digest_algo, kek_cipher_algo), b'Anonymous Sender    ', d['key_id_long']))
+    # Z_len = the key size for the KEK_alg_ID used with AESKeyWrap;
+    # Z = KDF( S, Z_len, Param );
+    # https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-08#section-13.4
+    keytable = new_hash(kdf_hash, b''.join((b'\0\0\0\1', s, param))).digest()[:keytable_size]
+    if len(keytable) < keytable_size:
+      raise ValueError('Digest %s output is too short for cipher %s.' % (kdf_hash, CIPHER_ALGOS[kek_cipher_algo]))
+    # C = AESKeyWrap( Z, m ) as per [RFC3394];
+    c = aes_key_wrap(keytable, data)
+    return struct.pack('>Hc32sB', 263, b'\x40', v_pk, len(c)) + c
   else:
     raise ValueError('Unknown PKESK pk_algo: %r' % (pk_algo,))
   bit_size = n[0]
@@ -1700,10 +1866,6 @@ def pk_encrypt_session_key(pk_encryption_key, cipher_algo, session_key):
   random_data = b''
   while len(random_data) < random_size:
     random_data += get_random_bytes_default(random_size - len(random_data)).replace(b'\0', b'')
-  if b'\0'[0]:  # Python 2, iterating over str yields 1-char strs.
-    checksum = sum(ord(b) for b in session_key)
-  else:
-    checksum = sum(b for b in session_key)
   data = struct.pack('>B%dsxB%dsH' % (len(random_data), len(session_key)), 2, random_data, cipher_algo, session_key, checksum)
   assert len(data) == size
   m = int_from_bytes_be(data)
@@ -1804,7 +1966,7 @@ def load_all_pk_encryption_keys(fread):
       elif len(data) >= 8 and b == 4:
         pk_algo, i = ord(data[5 : 6]), 6
         d['pk_algo'] = pk_algo
-      elif b > 4:
+      elif b > 4:  # TODO(pts): Support version 5 keys in https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-08#section-13.5
         pk_algo = i = 0
       else:
         raise ValueError('Key too short.')
@@ -1820,10 +1982,28 @@ def load_all_pk_encryption_keys(fread):
         elif d['pk_algo'] == 16:
           d['pk_algo_str'] = 'Elgamal'
           (d['p'], d['g'], d['y']), j = parse_mpis(3, data, i)
+        elif d['pk_algo'] == 18 and data[i : i + 11] == CV25519_OID:
+          (pk,), j = parse_mpis(1, data, i + 11)
+          kdfp, j = parse_pstring(data, j)
+          if len(kdfp) >= 3 and kdfp[:1] == b'\1':
+            if pk[0] != 263 or len(pk[1]) != 33 or pk[1][:1] != b'\x40':
+              raise ValueError('Invalid CV25519 public key: %s %s' % (pk[0], to_hex_str(pk[1])))
+            d['pk'], d['kdfp'] = (pk[1][1:], kdfp[1:]) # (public_key, key_derivation_function_parameters).
+            # OpenPGP stores scalars (secret keys) as MPI (big endian), and
+            # curve points (public keys) as MPI of big endian(b'\x40' +
+            # x_little_endian). curve25519_donna_scalarmult operates on
+            # little-endian strings. Thus:
+            #
+            #   assert b'\x40' + curve25519_donna_scalarmult(parse_mpis(1, secret_key)[0][::-1]) == parse_mpis(1, data, i + 11)[1]
+            #
+            # We use the [::-1] to convert from big endian to little endian.
+          else:
+            j = 0
         if j and not d['key_id']:
           fp_obj = new_hash('sha1', struct.pack('>BH', 0x99, j))
           fp_obj.update(data[:j])
-          d['key_id'] = fp_obj.hexdigest()[-16:].upper()
+          d['key_id_long'] = fp_obj.digest()
+          d['key_id'] = to_hex_str(d['key_id_long'][-8:]).upper()
       if not d['key_id']:
         d.pop('key_id', None)
   if d:
