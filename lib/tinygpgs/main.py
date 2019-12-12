@@ -315,7 +315,7 @@ def main(argv, zip_file=None):
       i += 1
     elif arg in ('--slow-cipher', '--no-slow-cipher'):
       params['is_slow_cipher'] = is_yes
-    elif arg == ('--slow-hash', '--no-slow-hash'):
+    elif arg in ('--slow-hash', '--no-slow-hash'):
       params['is_slow_hash'] = is_yes
     elif arg in ('--file-class', '--no-file-class'):
       file_class_mode = int(is_yes)
@@ -400,12 +400,12 @@ def main(argv, zip_file=None):
       encrypt_params['mtime'] = get_flag_arg_int(argv, i)
       i += 1
     elif do_encrypt and arg in ('--recipient-file', '-f'):  # gpg(1) 2.
-      from tinygpgs import gpgs
+      from tinygpgs import pubkey
       filename = get_flag_arg(argv, i)
       i += 1
       f = open(filename, 'rb')
       try:
-        encrypt_params['recipients'].append(gpgs.load_pk_encryption_key(f.read))
+        encrypt_params['recipients'].append(pubkey.load_pk_encryption_key(f.read, params.get('is_slow_cipher', False)))
       finally:
         f.close()
     else:
