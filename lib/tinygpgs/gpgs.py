@@ -1251,7 +1251,7 @@ def write_partial_gpg_packet_chunks(fwrite, packet_type, data, fread, buflog2cap
 # Default values mostly same as of GPG 1.x, GPG <2.1 (checked 1.0.6 and 1.4.18).
 def get_encrypt_symmetric_gpg_params(
     passphrase,  # This is the first argument, order of others can change.
-    is_slow_cipher=False, is_slow_hash=False, cipher='cast5', s2k_digest='sha1', compress='zip', compress_level=6, s2k_mode=3, s2k_count=65536, salt=None,
+    is_slow_cipher=False, is_slow_hash=False, cipher=None, s2k_digest=None, compress=None, compress_level=6, s2k_mode=3, s2k_count=65536, salt=None,
     do_mdc=True,  # No fixed default in gpg(1), let's play it safe with True.
     buflog2cap=13, plain_filename=b'', mtime=0, literal_type=b'b', do_add_ascii_armor=False, show_info_func=None, do_show_session_key=False, iv=None, recipients=None):
   plain_filename, literal_type = ensure_binary(plain_filename), ensure_binary(literal_type)
@@ -1259,27 +1259,56 @@ def get_encrypt_symmetric_gpg_params(
     show_info_func = lambda msg: 0
   _pack = struct.pack
   do_mdc = bool(do_mdc)
-  cipher = cipher.lower()
-  for cipher_algo, cipher2 in sorted(iteritems(CIPHER_ALGOS)):
-    if cipher2 == cipher:
-      break
-  else:
-    raise ValueError('Unknown GPG cipher: %s' % cipher)
-  s2k_digest = s2k_digest.replace('-', '').lower()
+  if recipients:  # Get cipher_algo and compress_algo from the preferences of the recipients.
+    if cipher is not None:
+      raise ValueError('cipher_algo will be chosen from the preferences of the recipients.')
+    if compress is not None:
+      raise ValueError('compress_algo will be chosen from the preferences of the recipients.')
+    s = None
+    for d in recipients:
+      cipher_algos = tuple(d.get('cipher_algos', ())) + (2,)  # 3DES is the default.
+      if s is None:
+        s = set(cipher_algos)
+      else:
+        s.intersection_update(cipher_algos)
+    for cipher_algo in tuple(recipients[0].get('cipher_algos', ())) + (2,):
+      if cipher_algo in s:
+        break
+    cipher = CIPHER_ALGOS[cipher_algo]
+    s = None
+    for d in recipients:
+      compress_algos = (d.get('compress_algos', ()) + (1, 0))  # ZIP, Uncompressed is the default.
+      if s is None:
+        s = set(compress_algos)
+      else:
+        s.intersection_update(compress_algos)
+    assert s
+    for compress_algo in tuple(recipients[0].get('compress_algos', ())) + (1, 0):
+      if compress_algo in s:
+        break
+    compress = COMPRESS_ALGOS[compress_algo]
+  else:  # Get cipher_algo and compress_algo from the arguments.
+    cipher = (cipher or 'cast5').lower()  # GPG 1.x default.
+    for cipher_algo, cipher2 in sorted(iteritems(CIPHER_ALGOS)):
+      if cipher2 == cipher:
+        break
+    else:
+      raise ValueError('Unknown GPG cipher: %s' % cipher)
+    compress = (compress or 'zip').lower()  # GPG 1.x default.
+    if compress == 'none':
+      compress_algo = 0
+    else:
+      for compress_algo, compress2 in sorted(iteritems(COMPRESS_ALGOS)):
+        if compress2 == compress:
+          break
+      else:
+        raise ValueError('Unknown GPG compressor: %s' % compress)
+  s2k_digest = (s2k_digest or 'sha1').replace('-', '').lower()  # GPG 1.x default.
   for digest_algo, s2k_digest2 in sorted(iteritems(DIGEST_ALGOS)):
     if s2k_digest2 == s2k_digest:
       break
   else:
     raise ValueError('Unknown GPG digest (for s2k): %s' % s2k_digest)
-  compress = compress.lower()
-  if compress == 'none':
-    compress_algo = 0
-  else:
-    for compress_algo, compress2 in sorted(iteritems(COMPRESS_ALGOS)):
-      if compress2 == compress:
-        break
-    else:
-      raise ValueError('Unknown GPG compressor: %s' % compress)
   if s2k_mode == 0:
     salt, count = b'', 0
   elif s2k_mode in (1, 3):
@@ -1689,6 +1718,41 @@ def pk_encrypt_session_key(pk_encryption_key, cipher_algo, session_key):
     assert 0, 'Impossible pk_algo.'
 
 
+if b'\0'[0]:  # Python 2.7.
+  ordx = ord
+else:
+  ordx = lambda b: b
+
+
+def parse_subpackets(d, data, i, j):
+  while i < j:
+    b = ord(data[i : i + 1])
+    if b < 192:
+      size = b
+      i += 1
+    elif b < 255:
+      size = ((b - 192) << 8 | ord(data[i + 1 : i + 2])) + 192
+      i += 2
+    else:
+      size, = struct.unpack('>L', data[i + 1 : i + 5])
+      i += 5
+    if not size:
+      raise ValueError('Subpacket size must be positive.')
+    subpacket_type = ord(data[i : i + 1])
+    i += 1
+    size -= 1
+    #import sys; sys.stderr.write('subpacket type=%d size=%d\n' % (subpacket_type, size))
+    if i + size > j:  # TODO(pts): Also check earlier.
+      raise ValueError('Subpacket too long.')
+    if subpacket_type == 11:  # Preferred cipher_algos.
+      d['cipher_algos'] = tuple(ordx(c) for c in data[i : i + size] if ordx(c) in CIPHER_ALGOS)
+    elif subpacket_type == 21:  # Preferred digest_algos.
+      d['digest_algos'] = tuple(ordx(c) for c in data[i : i + size] if ordx(c) in CIPHER_ALGOS)
+    elif subpacket_type == 22:  # Preferred compress_algos.
+      d['compress_algos'] = tuple(ordx(c) for c in data[i : i + size] if ordx(c) in CIPHER_ALGOS)
+    i += size
+
+
 def load_all_pk_encryption_keys(fread):
   # This can load output of `gpg --export' and `gpg --export-secret-key'
   # (with our without --armor), and also ~/.gnupg/pubring.gpg.
@@ -1707,7 +1771,24 @@ def load_all_pk_encryption_keys(fread):
     if packet_type == 13:
       # Example user ID: 'Real Name 2 (Comment 2) <testemail2@email.com>'
       d['user_id'] = ensure_str(data)
-    if packet_type in (14, 7) and 'version' not in d:
+    if packet_type == 2 and data[:1] == b'\4':  # Version 4 signature packet, with algo preferences.
+      i = 4
+      if i + 2 > len(data):
+        raise ValueError('Hashed subpacket size too short.')
+      size, = struct.unpack('>H', data[i : i + 2])
+      i += 2
+      if i + size > len(data):
+        raise ValueError('Hashed subpacket data too short.')
+      parse_subpackets(d, data, i, i + size)
+      i += size
+      if i + 2 > len(data):
+        raise ValueError('Unhashed subpacket size too short.')
+      size, = struct.unpack('>H', data[i : i + 2])
+      i += 2
+      if i + size > len(data):
+        raise ValueError('Unhashed subpacket data too short.')
+      parse_subpackets(d, data, i, i + size)
+    elif packet_type in (14, 7) and 'version' not in d:
       b = ord(data[:1] or b'\0')
       if len(data) >= 10 and b == 3:
         pk_algo, i = ord(data[7 : 8]), 8
