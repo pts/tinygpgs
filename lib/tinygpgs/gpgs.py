@@ -1382,10 +1382,7 @@ def get_encrypt_symmetric_gpg_params(
   if not literal_type or literal_type not in LITERAL_TYPES:
     raise ValueError('Bad literal type: %r' % literal_type)
   if callable(passphrase):
-    if recipients:
-      passphrase = None
-    else:
-      passphrase = passphrase()
+    passphrase = passphrase()
   if passphrase is None:
     if not recipients:
       raise ValueError('Missing passphrase and recipients.')

@@ -250,7 +250,19 @@ def main(argv, zip_file=None):
       '--passphrase-repeat', '--bufcap', '--output', '--cipher-algo',
       '--digest-algo', '--s2k-digest-algo', '--compress-algo',
       '--compress-level', '--bzip2-compress-level', '--s2k-mode', '--s2k-count',
-      '--plain-filename', '--literal-type', '--mtime')
+      '--plain-filename', '--literal-type', '--mtime', '--recipient-file',
+      '--keyring', '--secret-keyring')
+  public_key_flags = (
+        '-e', '--encrypt', '-s', '--sign', '--verify', '--generate-key',
+        '--gen-key', '--full-generate-key', '--full-gen-key', '--edit-key',
+        '--export', '--import', '--fast-import',
+        '--change-passphrase', '--passwd', '--sign-key',
+        '--lsign-key', '--quick-sign-key', '--quick-lsign-key',
+        '--trusted-key', '--trust-model', '--recipient', '-r',
+        '--hidden-recipient', '-R',
+        '--hidden-recipient-file', '-F', '--encrypt-to', '--hidden-encrypt-to',
+        '--no-encrypt-to', '--sender', '--primary-keyring',
+        )  # gpg(1).
   i, do_encrypt = 1, None
   while i < len(argv):  # Scan for -c or -d.
     arg = argv[i]
@@ -261,6 +273,8 @@ def main(argv, zip_file=None):
       break
     if arg in ('-c', '--symmetric'):  # Like gpg(1).
       do_encrypt = True
+    elif arg in ('-e', '--encrypt'):
+      do_encrypt = 2
     elif arg in ('-d', '--decrypt'):  # Like gpg(1).
       do_encrypt = False
     elif arg == '--help':
@@ -269,6 +283,8 @@ def main(argv, zip_file=None):
     elif arg == '--version':
       show_version()
       sys.exit(0)
+    elif arg in public_key_flags:
+      raise SystemExit('usage: public-key cryptography not supported: %s' % arg)
     elif arg in flags_with_arg and i < len(argv):
       i += 1
   if do_encrypt is None:
@@ -283,21 +299,9 @@ def main(argv, zip_file=None):
     is_yes = not arg.startswith('--no-')
     if arg == '--':
       break
-    elif arg in ('-c', '--symmetric', '-d', '--decrypt'):  # gpg(1).
+    elif arg in ('-c', '--symmetric', '-d', '--decrypt', '-e', '--encrypt'):  # gpg(1).
       pass  # Already parsed in the loop above.
-    elif arg in (
-        '-e', '--encrypt', '-s', '--sign', '--verify', '--generate-key',
-        '--gen-key', '--full-generate-key', '--full-gen-key', '--edit-key',
-        '--export', '--import', '--fast-import',
-        '--change-passphrase', '--passwd', '--sign-key',
-        '--lsign-key', '--quick-sign-key', '--quick-lsign-key',
-        '--trusted-key', '--trust-model', '--recipient', '-r',
-        '--hidden-recipient', '-R',
-        '--hidden-recipient-file', '-F', '--encrypt-to', '--hidden-encrypt-to',
-        '--no-encrypt-to', '--sender', '--primary-keyring',
-        ):  # gpg(1).
-      raise SystemExit('usage: public-key cryptography not supported: %s' % arg)
-    elif arg in ('--no-options', '--no-keyring', '--no-default-keyring', '--no-use-agent'):  # gpg(1).
+    elif arg in ('--no-options', '--no-keyring', '--no-default-keyring', '--no-use-agent', '--no-symkey-cache'):  # gpg(1).
       pass
     elif arg == '--use-agent':
       raise SystemExit('usage: unsupported flag: %s' % arg)
@@ -415,6 +419,11 @@ def main(argv, zip_file=None):
     i += 1
   if i != len(argv):
     raise SystemExit('usage: too many command-line arguments')
+  if do_encrypt == 2:
+    if not encrypt_params['recipients']:
+      raise SystemExit('usage: public-key encryption needs recipients; pass e.g. -f')
+    if params['passphrase'] is ():
+      params['passphrase'] = None  # Don't ask for passphrase.
   if input_file is None:
     input_file = '-'
   if output_file is None:
@@ -448,7 +457,7 @@ def main(argv, zip_file=None):
       f.close()
   elif isinstance(params['passphrase'], integer_types):  # File descroptor.
     params['passphrase'] = read_passphrase_from_fd(params['passphrase'])
-  elif params['passphrase'] == ():  # Interactive prompt.
+  elif params['passphrase'] is ():  # Interactive prompt.
     if is_batch:
       raise SystemExit('usage: passphrase prompt conflicts with --batch mode')
     params['passphrase'] = lambda is_twice=do_encrypt and do_passphrase_twice: (
