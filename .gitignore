@@ -7,3 +7,5 @@ dmsetup
 pp.bin
 calm.bin
 calm.txt
+/dist
+/MANIFEST
