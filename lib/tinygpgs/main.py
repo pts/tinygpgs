@@ -251,7 +251,7 @@ def main(argv, zip_file=None):
       '--digest-algo', '--s2k-digest-algo', '--compress-algo',
       '--compress-level', '--bzip2-compress-level', '--s2k-mode', '--s2k-count',
       '--plain-filename', '--literal-type', '--mtime', '--recipient-file',
-      '--keyring', '--secret-keyring')
+      '--keyring', '--secret-keyring', '--trust-model')
   public_key_flags = (
         '-e', '--encrypt', '-s', '--sign', '--verify', '--generate-key',
         '--gen-key', '--full-generate-key', '--full-gen-key', '--edit-key',
@@ -301,7 +301,7 @@ def main(argv, zip_file=None):
       break
     elif arg in ('-c', '--symmetric', '-d', '--decrypt', '-e', '--encrypt'):  # gpg(1).
       pass  # Already parsed in the loop above.
-    elif arg in ('--no-options', '--no-keyring', '--no-default-keyring', '--no-use-agent', '--no-symkey-cache'):  # gpg(1).
+    elif arg in ('--no-options', '--no-keyring', '--no-default-keyring', '--no-use-agent', '--no-symkey-cache', '--no-auto-check-trustdb'):  # gpg(1).
       pass
     elif arg == '--use-agent':
       raise SystemExit('usage: unsupported flag: %s' % arg)
@@ -316,6 +316,9 @@ def main(argv, zip_file=None):
     elif arg == '--pinentry-mode':  # gpg(1).
       if get_flag_arg(argv, i) != 'loopback':
         raise SystemExit('usage: unsupported flag value, expecting loopback: %s %s' % (arg, argv[i]))
+      i += 1
+    elif arg == '--trust-model':  # gpg(1).
+      get_flag_arg(argv, i)  # Typical value: always
       i += 1
     elif arg in ('--slow-cipher', '--no-slow-cipher'):
       params['is_slow_cipher'] = is_yes
