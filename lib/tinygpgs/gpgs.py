@@ -1155,10 +1155,10 @@ def get_gpg_packet_header(packet_type, size, _pack=struct.pack):
     raise ValueError('Invalid GPG packet type: %d' % packet_type)
   if size < 0:
     raise ValueError('To-be-created GPG packet has negative size.')
-  elif size < 192:
-    return _pack('>BB', 192 | packet_type, size)
   elif size < 256 and packet_type < 16:
     return _pack('>BB', 128 | (packet_type << 2), size)
+  elif size < 192:
+    return _pack('>BB', 192 | packet_type, size)
   elif size < 65536 and packet_type < 16:
     return _pack('>BH', 129 | (packet_type << 2), size)
   elif size < 8192 + 192:
