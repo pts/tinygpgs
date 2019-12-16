@@ -40,7 +40,7 @@ VERSION = '0.18'
 # --- Passphrase prompt.
 
 
-def prompt_passphrase(do_passphrase_twice):
+def prompt_passphrase(is_twice):
   sys.stderr.flush()
   sys.stdout.flush()
   import getpass
@@ -50,7 +50,7 @@ def prompt_passphrase(do_passphrase_twice):
   passphrase = getpass.getpass('Enter passphrase: ')
   if not passphrase:
     raise SystemExit('fatal: empty passphrase')
-  if do_passphrase_twice:
+  if is_twice:
     passphrase2 = getpass.getpass('Re-enter passphrase: ')
     if passphrase != passphrase2:
       raise SystemExit('fatal: passphrases do not match')
@@ -108,7 +108,8 @@ Encryption and decryption flags:
   for stdin), and use it (without the trailing line breaks) as passphrase.
   Be careful: if stdin is used and it's a TTY, it will echo the passphrase.
 * --passphrase-repeat <n>: If <n> is more than 1, ask the passphrase twice
-  before encryption. Doesn't affect decryption.
+  before encryption. Doesn't affect decryption. The default is same as for
+  gpg(1): 1 if `--pinentry-mode loopback' is specified, otherwise 2.
 * --bufcap <n>: Use buffer size of (approximately) <n> throughout, and also use
   it as GP partial packet size. <n> must be a power of 2 at least 512. The
   default is 8192.
@@ -244,7 +245,8 @@ def main(argv, zip_file=None):
     show_usage(argv[0])
     sys.exit(1)
   argv = list(argv)
-  is_batch = do_passphrase_twice = is_yes_flag = False
+  is_batch = is_yes_flag = False
+  do_passphrase_twice = True
   file_class_mode = 0
   output_file = input_file = None
   bufcap = 8192
@@ -326,6 +328,7 @@ def main(argv, zip_file=None):
       if get_flag_arg(argv, i) != 'loopback':
         raise SystemExit('usage: unsupported flag value, expecting loopback: %s %s' % (arg, argv[i]))
       i += 1
+      do_passphrase_twice = False  # Compatible with gpg(1).
     elif arg == '--trust-model':  # gpg(1).
       get_flag_arg(argv, i)  # Typical value: always
       i += 1
