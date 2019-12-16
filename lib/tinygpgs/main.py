@@ -7,7 +7,7 @@ from tinygpgs.pyx import ensure_binary, integer_types, is_stdin_text, is_python_
 # Here we don't import anything from tinygpgs, to make --help and flag
 # parsing fast. We do lazy imports later as needed.
 
-# !! Accept -e flag instead of -c if recipients are present.
+# !! Convert README.txt to README.md for easier viewing on GitHub.
 # !! Add --speed-test with dependency checks on Crypto.Cipher._AES.
 # !! Add --install-pycrypto, make it work as root and non-root, make it
 #    download pip first if needed, make it remind the user about
