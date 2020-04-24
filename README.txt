@@ -62,7 +62,7 @@ Dependencies:
   instead, but that can be >400 times slower (~162 times for SHA-1)
   than hashlib with OpenSSL.
 * Only for zip and zlib (de)compression, the standard Python module zip.
-* Only dor bzip2 (de)compression, the standard Python module bzip2.
+* Only for bzip2 (de)compression, the standard Python module bzip2.
 * Only for interactive passphrase prompts, the standard Python module
   getpass. (Use --passphrase or similar to avoid the prompt.)
 
