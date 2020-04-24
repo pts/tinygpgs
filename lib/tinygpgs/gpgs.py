@@ -464,7 +464,7 @@ def yield_gpg_binary_packets(fread, c0=b''):
           b = ord(c)
           if not 224 <= b < 255:
             break
-      if b < 191:
+      if b < 192:
         size = b
       elif b < 224:
         c = fread(1)
