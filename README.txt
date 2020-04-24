@@ -118,6 +118,9 @@ run:
 
   $ python tinygpgs
 
+See also ``Installation instructions and usage on Windows'' for all
+installation steps (including Python installation) on Windows.
+
 Installation as a Python module
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 If you have Python 2 already installed, just run this command (maybe with
