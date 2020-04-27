@@ -190,6 +190,8 @@ Tools for decrypting symmetric key GPG message
 * gpg2: gpg -d --pinentry-mode loopback <FILE.bin.gpg >FILE.bin
 * pgpy: python -c 'import getpass, sys, pgpy; sys.stdout.write(pgpy.PGPMessage.from_file(sys.argv[1]).decrypt(getpass.getpass("Enter passphrase: ")).message)' FILE.bin.gpg >FILE.bin
   installation: pip install pgpy  # Has lots of dependendes, use virtualenv.
+* libgpgme (https://gnupg.org/software/gpgme/index.html): C library from the
+  authors of GPG.
 
 https://github.com/thenoviceoof/encryptedfile supports only encryption,
 --no-armor, --no-mdc and `--compress-algo none'.
