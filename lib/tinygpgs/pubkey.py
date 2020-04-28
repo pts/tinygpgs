@@ -242,7 +242,7 @@ def load_all_pk_encryption_keys(fread, is_slow_hash):
       raise ValueError('Unexpected partial packet.')
     if packet_type in (5, 6):
       if d:
-        encryption_keys.append(d)
+        pk_encryption_keys.append(d)
       d = {}
     if packet_type == 13:
       # Example user ID: 'Real Name 2 (Comment 2) <testemail2@email.com>'
