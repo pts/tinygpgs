@@ -7,7 +7,7 @@ import struct
 
 from tinygpgs import gpgs
 
-from tinygpgs.pyx import xrange, to_hex_str, ensure_binary, callable, ensure_str, int_from_bytes_be
+from tinygpgs.pyx import xrange, to_hex_str, ensure_binary, callable, ensure_str, int_from_bytes_be, buffer, binary_type
 
 
 def parse_mpis(count, data, i):
@@ -31,7 +31,7 @@ def parse_pstring(data, i):
   """Parses and returns a Pascal string."""
   if i >= len(data):
     raise ValueError('pstring too short.')
-  size = ord(data[i : i + 1])
+  size, = struct.unpack('>B', data[i : i + 1])
   i += 1
   if i + size > len(data):
     raise ValueError('pstring data too short.')
@@ -151,8 +151,8 @@ def pk_encrypt_session_key(pk_encryption_key, cipher_algo, session_key, is_slow_
     if kek_cipher_algo not in (7, 8, 9):
       raise ValueError('Expected AES cipher for KEK, got: %s' % gpgs.CIPHER_ALGOS.get(kek_cipher_algo, kek_cipher_algo))
     keytable_size = gpgs.KEYTABLE_SIZES[kek_cipher_algo]
-    assert len(d['key_id_long']) == 20
-    param = b''.join((CV25519_OID, struct.pack('>BBBBB', pk_algo_id, 3, 1, kdf_digest_algo, kek_cipher_algo), b'Anonymous Sender    ', d['key_id_long']))
+    assert len(d['key_id_long']) >= 20
+    param = b''.join((CV25519_OID, struct.pack('>BBBBB', pk_algo_id, 3, 1, kdf_digest_algo, kek_cipher_algo), b'Anonymous Sender    ', d['key_id_long'][:20]))
     # Z_len = the key size for the KEK_alg_ID used with AESKeyWrap;
     # Z = KDF( S, Z_len, Param );
     # https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-08#section-13.4
@@ -226,24 +226,30 @@ def parse_subpackets(d, data, i, j):
       d['digest_algos'] = tuple(ordx(c) for c in data[i : i + size] if ordx(c) in gpgs.CIPHER_ALGOS)
     elif subpacket_type == 22:  # Preferred compress_algos.
       d['compress_algos'] = tuple(ordx(c) for c in data[i : i + size] if ordx(c) in gpgs.CIPHER_ALGOS)
+    elif subpacket_type == 27:  # Key flags.
+      if size >= 8:
+        d['key_flags'], = struct.unpack('<Q', data[i : i + 8])
+      else:
+        d['key_flags'], = struct.unpack('<Q', data[i : i + size] + b'\0' * (8 - size))
     i += size
 
 
-def load_all_pk_encryption_keys(fread, is_slow_hash):
+def yield_pk_encryption_keys(fread, is_slow_hash):
   # This can load output of `gpg --export' and `gpg --export-secret-key'
   # (with our without --armor), and also ~/.gnupg/pubring.gpg.
   # packet_types for PUBLIC KEY BLOCK: 6, 13, 2, 14, 2.
+  # packet_types for longer PUBLIC KEY BLOCK: 6, (13, 2+)+, (17, 2+)+, (14, 2+)+
+  #   6: Public Key (provides signature services)
+  #   13: User ID (contains single string with real name, comment and e-mail address).
+  #   2: Signature (applies to the preceding User ID, User Attribute or Public Subkey)
+  #   17: User Attribute (similar to User ID, can contain images as well)
+  #   14: Public Subkey (provides encryption services)
   # packet_types for PRIVATE KEY BLOCK: 5, 13, 2, 7, 2.
-  pk_encryption_keys = []
   d = {}
   for packet_type, is_partial, data in gpgs.yield_gpg_packets(
       fread, armor_types=(b'PUBLIC KEY BLOCK', b'PRIVATE KEY BLOCK'), allowed_first_packet_types=(6, 5)):
     if is_partial:
       raise ValueError('Unexpected partial packet.')
-    if packet_type in (5, 6):
-      if d:
-        pk_encryption_keys.append(d)
-      d = {}
     if packet_type == 13:
       # Example user ID: 'Real Name 2 (Comment 2) <testemail2@email.com>'
       d['user_id'] = ensure_str(data)
@@ -264,27 +270,34 @@ def load_all_pk_encryption_keys(fread, is_slow_hash):
       if i + size > len(data):
         raise ValueError('Unhashed subpacket data too short.')
       parse_subpackets(d, data, i, i + size)
-    elif packet_type in (14, 7) and 'version' not in d:
-      b = ord(data[:1] or b'\0')
-      if len(data) >= 10 and b == 3:
+    elif packet_type in (6, 14, 5, 7):
+      if d:
+        yield d
+      d = {}
+      version = ord(data[:1] or b'\0')
+      if len(data) >= 10 and version in (2, 3):
         pk_algo, i = ord(data[7 : 8]), 8
         d['pk_algo'] = pk_algo
-      elif len(data) >= 8 and b == 4:
+      elif len(data) >= 8 and version == 4:
         pk_algo, i = ord(data[5 : 6]), 6
         d['pk_algo'] = pk_algo
-      elif b > 4:  # TODO(pts): Support version 5 keys in https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-08#section-13.5
+      elif len(data) >= 12 and version == 5:  # https://tools.ietf.org/html/draft-ietf-openpgp-rfc4880bis-09#section-5.5.2
+        pk_algo, pk_size = struct.unpack('>BL', data[5 : 10])
+        if pk_size < 2:
+          raise ValueError('Version 5 key too short.')
+        d['pk_algo'], i, data = pk_algo, 10, buffer(data, 0, 10 + pk_size)
+      elif version > 5:
         pk_algo = i = 0
       else:
         raise ValueError('Key too short.')
-      d['version'], d['key_id'], j = b, None, 0
+      d['version'], d['key_id'], j = version, None, 0
+      data = buffer(data)
       if i:
         if d['pk_algo'] == 1:
           d['pk_algo_str'] = 'RSA'
           (d['n'], d['e']), j = parse_mpis(2, data, i)
           if d['n'][0] < 64:
             raise ValueError('RSA key too short.')
-          if b == 3:
-            d['key_id'] = ensure_str(binascii.hexlify(struct.pack('>Q', d['n'][1][-8:])).upper())
         elif d['pk_algo'] == 16:
           d['pk_algo_str'] = 'Elgamal'
           (d['p'], d['g'], d['y']), j = parse_mpis(3, data, i)
@@ -304,26 +317,30 @@ def load_all_pk_encryption_keys(fread, is_slow_hash):
             #
             # We use the [::-1] to convert from big endian to little endian.
           else:
-            j = 0
-        if j and not d['key_id']:
+            version = 0  # Ignore this key.
+        if version in (2, 3) and d['pk_algo'] == 1:  # RSA.
+          d['key_id'] = ensure_str(binascii.hexlify(struct.pack('>Q', d['n'][1][-8:])).upper())
+        elif version == 4:
           fp_obj = gpgs.new_hash('sha1', struct.pack('>BH', 0x99, j), is_slow_hash)
           fp_obj.update(data[:j])
           d['key_id_long'] = fp_obj.digest()
           d['key_id'] = to_hex_str(d['key_id_long'][-8:]).upper()
+        elif version == 5:  # Untested, GPG 2.2.29 can't generate such a key.
+          fp_obj = gpgs.new_hash('sha256', struct.pack('>BL', 0x9a, len(data)), is_slow_hash)
+          fp_obj.update(data)
+          d['key_id_long'] = fp_obj.digest()
+          d['key_id'] = to_hex_str(d['key_id_long'][:8]).upper()
       if not d['key_id']:
         d.pop('key_id', None)
   if d:
-    pk_encryption_keys.append(d)
-  return pk_encryption_keys
+    yield d
 
 
 def load_pk_encryption_key(fread, is_slow_hash):
   pk_encryption_keys, bad_count = [], 0
   #fread = open('/home/pts/.gnupg/pubring.gpg', 'rb').read
-  for d in load_all_pk_encryption_keys(fread, is_slow_hash):
-    if d.get('key_id'):
-      if pk_encryption_keys:
-        raise ValueError('Multiple public-key encryption keys found.')
+  for d in yield_pk_encryption_keys(fread, is_slow_hash):
+    if d.get('key_id') and d.get('key_flags', 0xc) & 0xc:  # Encryption.
       pk_encryption_keys.append(d)
     else:
       bad_count += 1
@@ -332,4 +349,12 @@ def load_pk_encryption_key(fread, is_slow_hash):
       raise ValueError('Public-key encryption keys not recognized.')
     else:
       raise ValueError('Public-key encryption keys missing.')
-  return pk_encryption_keys[0]
+  # Use the last encryption subkey. Typically this is the one which expires
+  # the latest. This is the same as what GPG 2.1.18 is doing if 2 never-expiring
+  # encryption subkeys are created.
+  #
+  # TODO(pts): If there is a non-expired subkey, ignore those subkeys which
+  # have already expired.
+  return pk_encryption_keys[-1]
+  #if len(pk_encryption_keys) > 1:
+  #  raise ValueError('Multiple public-key encryption keys found: %d' % len(pk_encryption_keys))
