@@ -70,7 +70,7 @@ else:  # Python 2.
   callable = callable
 # Python 3.x.
 is_buffer_slice = type(buffer(b'')[:]) != type(b'')  # Not in six.
-is_buffer_item_binary = type(buffer(b'x')[0]) == type(b'')
+#is_buffer_item_binary = type(buffer(b'x')[0]) == type(b'')
 try:
   is_buffer_join = (b'y').join((buffer(b'x'),)) == b'x'  # Python >=3.4.
 except (TypeError, ValueError):

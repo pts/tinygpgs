@@ -10,7 +10,7 @@ Imports hashlib or tinygpgs.hash lazily.
 import binascii
 import struct
 
-from tinygpgs.pyx import iteritems, buffer, binary_type, xrange, to_hex_str, is_buffer_slice, is_buffer_item_binary, is_buffer_join, ensure_binary, callable, is_python_function, ensure_str, int_from_bytes_be
+from tinygpgs.pyx import iteritems, buffer, binary_type, xrange, to_hex_str, is_buffer_slice, is_buffer_join, ensure_binary, callable, is_python_function, ensure_str, int_from_bytes_be
 from tinygpgs.strxor import make_strxor, fast_strxor
 
 
